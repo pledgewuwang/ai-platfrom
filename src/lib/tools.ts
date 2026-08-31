@@ -1,0 +1,480 @@
+/**
+ * AI 工具系统（Function Calling）
+ * 定义 AI 可以调用的工具，让 AI 自己决定何时搜索、爬取网页
+ */
+
+import { guardedFetch, readTextWithCap } from "./url-guard";
+import { smartCrawl } from "./smart-crawler";
+
+export interface Tool {
+  name: string;
+  description: string;
+  parameters: {
+    type: "object";
+    properties: Record<string, {
+      type: string;
+      description: string;
+      enum?: string[];
+    }>;
+    required: string[];
+  };
+}
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface ToolResult {
+  toolCallId: string;
+  name: string;
+  result: unknown;
+  error?: string;
+}
+
+// 定义可用工具
+export const AVAILABLE_TOOLS: Tool[] = [
+  {
+    name: "web_search",
+    description: "搜索互联网获取最新信息。当需要查找实时信息、新闻、技术文档、产品信息等时使用。",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "搜索关键词",
+        },
+        num_results: {
+          type: "number",
+          description: "返回结果数量，默认 5",
+        },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "fetch_webpage",
+    description: "获取指定 URL 的网页内容并提取关键信息。当需要阅读特定网页、文章、文档时使用。",
+    parameters: {
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description: "要访问的网页 URL",
+        },
+        max_length: {
+          type: "number",
+          description: "最大提取字符数，默认 5000",
+        },
+      },
+      required: ["url"],
+    },
+  },
+  {
+    name: "search_and_read",
+    description: "先搜索再阅读最相关的结果。当需要调研某个话题并获取详细信息时使用。",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "搜索关键词",
+        },
+        read_top: {
+          type: "number",
+          description: "阅读前几个搜索结果，默认 3",
+        },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "generate_image",
+    description: "根据描述生成图片。当用户要求生成图片、画图、创建图像时使用。AI 可以自动优化提示词以获得更好的效果。",
+    parameters: {
+      type: "object",
+      properties: {
+        prompt: {
+          type: "string",
+          description: "图片描述（AI 会自动优化此提示词）",
+        },
+        style: {
+          type: "string",
+          description: "风格偏好",
+          enum: ["realistic", "artistic", "cartoon", "anime", "photographic"],
+        },
+      },
+      required: ["prompt"],
+    },
+  },
+];
+
+/**
+ * 执行工具调用
+ */
+export async function executeTool(toolCall: ToolCall): Promise<ToolResult> {
+  try {
+    let result: unknown;
+
+    switch (toolCall.name) {
+      case "web_search":
+        result = await toolWebSearch(
+          toolCall.arguments.query as string,
+          (toolCall.arguments.num_results as number) || 5
+        );
+        break;
+
+      case "fetch_webpage":
+        result = await toolFetchWebpage(
+          toolCall.arguments.url as string,
+          (toolCall.arguments.max_length as number) || 5000
+        );
+        break;
+
+      case "search_and_read":
+        result = await toolSearchAndRead(
+          toolCall.arguments.query as string,
+          (toolCall.arguments.read_top as number) || 3
+        );
+        break;
+
+      case "generate_image":
+        result = await toolGenerateImage(
+          toolCall.arguments.prompt as string,
+          (toolCall.arguments.style as string) || "realistic"
+        );
+        break;
+
+      default:
+        return {
+          toolCallId: toolCall.id,
+          name: toolCall.name,
+          result: null,
+          error: `Unknown tool: ${toolCall.name}`,
+        };
+    }
+
+    return {
+      toolCallId: toolCall.id,
+      name: toolCall.name,
+      result,
+    };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    return {
+      toolCallId: toolCall.id,
+      name: toolCall.name,
+      result: null,
+      error: message,
+    };
+  }
+}
+
+/**
+ * 工具：网页搜索（必应 / 百度 / 知乎 / 小红书）
+ * 说明：百度/知乎/小红书直连抓取会被反爬（验证码/登录墙）拦截，
+ * 因此统一通过必应检索，再按结果 URL 域名归类到对应来源。
+ */
+async function toolWebSearch(query: string, numResults: number) {
+  // 抓取足够多的结果再按域名归类
+  const items = await searchWeb(query, Math.max(numResults * 3, 15));
+
+  const categorize = (url: string): string => {
+    if (url.includes("zhihu.com")) return "知乎";
+    if (url.includes("xiaohongshu.com")) return "小红书";
+    if (url.includes("baidu.com")) return "百度";
+    return "必应";
+  };
+
+  const allResults: { title: string; snippet: string; url: string; source: string }[] =
+    items.map((item) => ({ ...item, source: categorize(item.url) }));
+
+  const sourceOrder = ["必应", "百度", "知乎", "小红书"];
+  const seen = new Set<string>();
+  const deduped = allResults
+    .sort((a, b) => sourceOrder.indexOf(a.source) - sourceOrder.indexOf(b.source))
+    .filter((r) => {
+      const key = r.url || r.title;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+  const results = deduped.slice(0, numResults);
+
+  // 自动抓取前 2 个最相关结果的全文
+  const autoFetch = [];
+  for (const item of results.filter((r) => r.url && r.url.startsWith("http")).slice(0, 2)) {
+    try {
+      const pageResult = await toolFetchWebpage(item.url, 3000);
+      autoFetch.push(pageResult);
+    } catch {
+      // 抓取失败就跳过
+    }
+  }
+
+  const usedSources = [...new Set(results.map((r) => r.source))];
+  const hasResults = results.length > 0;
+
+  return {
+    query,
+    results: results.map(({ source, ...rest }) => ({ ...rest, source })),
+    autoFetched: autoFetch.length > 0 ? autoFetch : undefined,
+    source: hasResults ? usedSources.join("+") : "no-results",
+    note: "搜索源：必应（无结果时自动切 DuckDuckGo）；结果按域名归入 必应/百度/知乎/小红书",
+  };
+}
+
+/**
+ * 搜索入口:必应优先,空结果时降级 DuckDuckGo(必应改版/风控时不至于静默返回空)
+ */
+async function searchWeb(query: string, num: number) {
+  let items: { title: string; snippet: string; url: string }[] = [];
+  try {
+    items = await searchBing(query, num);
+  } catch (e) {
+    console.warn("[Tools] Bing 搜索失败,尝试 DuckDuckGo:", e);
+  }
+  if (items.length === 0) {
+    try {
+      items = await searchDuckDuckGo(query, num);
+    } catch (e) {
+      console.warn("[Tools] DuckDuckGo 兜底也失败:", e);
+    }
+  }
+  return items;
+}
+
+/** DuckDuckGo HTML 版解析(结构简单稳定,无 JS 依赖) */
+async function searchDuckDuckGo(query: string, num: number) {
+  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+  const html = await fetchHtml(url);
+
+  const results: { title: string; snippet: string; url: string }[] = [];
+  const blockRe = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>([\s\S]*?)(?=<a[^>]*class="[^"]*result__a|<\/body)/g;
+  let m: RegExpExecArray | null;
+  while ((m = blockRe.exec(html)) !== null && results.length < num) {
+    const href = normalizeDdgUrl(m[1]);
+    const title = stripHtml(m[2]).slice(0, 120);
+    if (!title || !/^https?:\/\//.test(href)) continue;
+    const snippetM = m[3].match(/<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/);
+    results.push({
+      title,
+      url: href,
+      snippet: snippetM ? stripHtml(snippetM[1]).slice(0, 300) : "",
+    });
+  }
+  return results;
+}
+
+/** DDG 的跳转链接 /l/?uddg=<encoded> 还原成真实 URL */
+function normalizeDdgUrl(href: string): string {
+  let h = href;
+  if (h.startsWith("//")) h = "https:" + h;
+  try {
+    const u = new URL(h);
+    if (u.pathname === "/l/") {
+      const uddg = u.searchParams.get("uddg");
+      if (uddg) return uddg;
+    }
+    return u.toString();
+  } catch {
+    return h;
+  }
+}
+
+async function searchBing(query: string, num: number) {
+  const url = `https://www.bing.com/search?q=${encodeURIComponent(query)}&count=${num}&setlang=zh-hans`;
+  const html = await fetchHtml(url);
+  const results: { title: string; snippet: string; url: string }[] = [];
+  const blockRe = /<li class="b_algo"[\s\S]*?<\/li>/g;
+  let m: RegExpExecArray | null;
+  while ((m = blockRe.exec(html)) !== null && results.length < num) {
+    const block = m[0];
+    const titleM = block.match(/<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/);
+    if (!titleM) continue;
+    const snippetM = block.match(/<p[^>]*>([\s\S]*?)<\/p>/);
+    results.push({
+      title: stripHtml(titleM[2]).slice(0, 120),
+      url: titleM[1],
+      snippet: snippetM ? stripHtml(snippetM[1]).slice(0, 300) : "",
+    });
+  }
+  return results;
+}
+
+async function fetchHtml(url: string): Promise<string> {
+  const response = await guardedFetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    },
+    signal: AbortSignal.timeout(12000),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return readTextWithCap(response);
+}
+
+function stripHtml(s: string): string {
+  return s
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+/**
+ * 工具：获取网页内容
+ * 直接调用 smartCrawl(此处是 Node 服务端环境,相对路径 fetch 会抛
+ * "Failed to parse URL",必须走库函数而非 HTTP 自调用)
+ */
+async function toolFetchWebpage(url: string, maxLength: number) {
+  const result = await smartCrawl(url, { maxContentLength: maxLength });
+  return {
+    url,
+    title: result.title,
+    content: result.content,
+    stats: result.stats,
+  };
+}
+
+/**
+ * 工具：搜索并阅读
+ */
+async function toolSearchAndRead(query: string, readTop: number) {
+  // 1. 先搜索
+  const searchResult = await toolWebSearch(query, readTop);
+
+  // 2. 阅读前 N 个结果
+  const readings: unknown[] = [];
+  for (const item of searchResult.results.slice(0, readTop)) {
+    if (item.url && item.url.startsWith("http")) {
+      try {
+        const readResult = await toolFetchWebpage(item.url, 3000);
+        readings.push(readResult);
+      } catch {
+        // 阅读失败就跳过
+        readings.push({ url: item.url, error: "Failed to read" });
+      }
+    }
+  }
+
+  return {
+    query,
+    searchResults: searchResult.results,
+    readings,
+  };
+}
+
+/**
+ * 工具：AI 自主优化提示词并生成图片
+ */
+async function toolGenerateImage(prompt: string, style: string) {
+  // AI 自动优化提示词
+  const stylePrompts: Record<string, string> = {
+    realistic: "photorealistic, high detail, 8k, professional photography",
+    artistic: "digital art, artistic style, vibrant colors, creative composition",
+    cartoon: "cartoon style, cute, colorful, clean lines, illustration",
+    anime: "anime style, detailed, studio ghibli inspired, beautiful lighting",
+    photographic: "professional photograph, sharp focus, natural lighting, DSLR quality",
+  };
+
+  const enhancedPrompt = `${prompt}, ${stylePrompts[style] || stylePrompts.realistic}`;
+
+  // 调用图片生成 API（使用 GPT Image 2）
+  // .env.local 中配置 DEFAULT_IMAGE_API;兼容旧变量名 DEFAULT_IMAGE_API_KEY
+  const apiKey = process.env.DEFAULT_IMAGE_API || process.env.DEFAULT_IMAGE_API_KEY || "";
+  if (!apiKey) {
+    throw new Error("No image API key configured");
+  }
+
+  const response = await guardedFetch("https://api.qnaigc.com/v1/images/generations", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: "openai/gpt-image-2",
+      prompt: enhancedPrompt,
+      n: 1,
+      size: "1024x1024",
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.text().catch(() => "Unknown error");
+    throw new Error(`Image generation failed: ${response.status} - ${err}`);
+  }
+
+  const data = await response.json();
+  const image = data.data?.[0];
+
+  return {
+    originalPrompt: prompt,
+    enhancedPrompt,
+    style,
+    imageUrl: image?.url || (image?.b64_json ? `data:image/png;base64,${image.b64_json}` : null),
+  };
+}
+
+/**
+ * 将工具定义转换为 OpenAI function 格式
+ */
+export function toolsToOpenAIFunctions(tools: Tool[]) {
+  return tools.map((tool) => ({
+    type: "function" as const,
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    },
+  }));
+}
+
+/**
+ * 从 AI 响应中解析工具调用
+ * 支持 OpenAI 格式的 function_call / tool_calls
+ */
+export function parseToolCalls(response: unknown): ToolCall[] {
+  const resp = response as Record<string, unknown>;
+  const choices = resp.choices as Array<Record<string, unknown>> | undefined;
+  if (!choices?.[0]) return [];
+
+  const message = choices[0].message as Record<string, unknown> | undefined;
+  if (!message) return [];
+
+  const toolCalls: ToolCall[] = [];
+
+  // OpenAI format: message.tool_calls
+  if (Array.isArray(message.tool_calls)) {
+    for (const tc of message.tool_calls) {
+      const fn = tc.function as Record<string, unknown>;
+      toolCalls.push({
+        id: tc.id as string,
+        name: fn.name as string,
+        arguments: JSON.parse(fn.arguments as string || "{}"),
+      });
+    }
+  }
+
+  // Legacy format: message.function_call
+  if (message.function_call && !toolCalls.length) {
+    const fc = message.function_call as Record<string, string>;
+    toolCalls.push({
+      id: `call_${Date.now()}`,
+      name: fc.name,
+      arguments: JSON.parse(fc.arguments || "{}"),
+    });
+  }
+
+  return toolCalls;
+}
