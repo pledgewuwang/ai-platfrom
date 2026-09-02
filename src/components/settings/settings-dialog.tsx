@@ -44,15 +44,20 @@ const DEFAULT_SETTINGS = {
 
 /** 对话 API 提供商预设(选中即填地址,Key 按域名各存各的) */
 const CHAT_PROVIDERS = [
-  { id: "qiniu", label: "七牛云 (qnaigc)", url: "https://api.qnaigc.com/v1" },
-  { id: "openai", label: "OpenAI", url: "https://api.openai.com/v1" },
+  { id: "qiniu", label: "七牛云 (推荐)", url: "https://api.qnaigc.com/v1" },
   { id: "deepseek", label: "DeepSeek", url: "https://api.deepseek.com/v1" },
-  { id: "anthropic", label: "Anthropic", url: "https://api.anthropic.com/v1" },
+  { id: "zhipu", label: "智谱华章 (GLM)", url: "https://open.bigmodel.cn/api/paas/v4" },
+  { id: "moonshot", label: "月之暗面 (Kimi)", url: "https://api.moonshot.cn/v1" },
+  { id: "minimax", label: "蚂蚁百灵 (MiniMax)", url: "https://api.minimax.chat/v1" },
+  { id: "mimo", label: "小米 MIMO", url: "https://api.xiaomimimo.com/v1" },
+  { id: "openai", label: "OpenAI", url: "https://api.openai.com/v1" },
+  { id: "anthropic", label: "Anthropic (Claude)", url: "https://api.anthropic.com/v1" },
   {
     id: "dashscope",
-    label: "阿里云 DashScope",
+    label: "阿里云 DashScope (通义)",
     url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
   },
+  { id: "siliconflow", label: "SiliconFlow (硅基流动)", url: "https://api.siliconflow.cn/v1" },
 ];
 
 /** 图片生成提供商(每个都有自己的 Key 位置) */
