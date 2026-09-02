@@ -11,9 +11,8 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Globe, Loader2, Copy, Check, ExternalLink } from "lucide-react";
+import { Globe, Loader2, Copy, Check } from "lucide-react";
 import { toast } from "sonner";
 
 interface ExtractResult {

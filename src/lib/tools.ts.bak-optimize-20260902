@@ -33,12 +33,6 @@ export interface ToolResult {
   error?: string;
 }
 
-/** executeTool 的可选行为开关(由请求方的设置传入) */
-export interface ToolOptions {
-  /** web_search 后是否自动阅读前 2 条结果全文,默认 true */
-  autoRead?: boolean;
-}
-
 // 定义可用工具
 export const AVAILABLE_TOOLS: Tool[] = [
   {
@@ -117,22 +111,9 @@ export const AVAILABLE_TOOLS: Tool[] = [
 ];
 
 /**
- * 按白名单过滤工具。
- * enabledTools 为空数组/未传时返回全部(向后兼容旧客户端)。
- */
-export function getEnabledTools(enabledTools?: string[]): Tool[] {
-  if (!enabledTools || enabledTools.length === 0) return AVAILABLE_TOOLS;
-  const allow = new Set(enabledTools);
-  return AVAILABLE_TOOLS.filter((t) => allow.has(t.name));
-}
-
-/**
  * 执行工具调用
  */
-export async function executeTool(
-  toolCall: ToolCall,
-  opts: ToolOptions = {}
-): Promise<ToolResult> {
+export async function executeTool(toolCall: ToolCall): Promise<ToolResult> {
   try {
     let result: unknown;
 
@@ -140,15 +121,14 @@ export async function executeTool(
       case "web_search":
         result = await toolWebSearch(
           toolCall.arguments.query as string,
-          (toolCall.arguments.num_results as number) || 5,
-          { autoFetch: opts.autoRead !== false }
+          (toolCall.arguments.num_results as number) || 5
         );
         break;
 
       case "fetch_webpage":
         result = await toolFetchWebpage(
           toolCall.arguments.url as string,
-          clampMaxLength(toolCall.arguments.max_length)
+          (toolCall.arguments.max_length as number) || 5000
         );
         break;
 
@@ -191,24 +171,12 @@ export async function executeTool(
   }
 }
 
-/** max_length 服务端钳制:模型可能传任意值,超长内容白耗 token */
-function clampMaxLength(raw: unknown): number {
-  const n = Number(raw) || 5000;
-  return Math.min(Math.max(n, 500), 20000);
-}
-
 /**
  * 工具：网页搜索（必应 / 百度 / 知乎 / 小红书）
  * 说明：百度/知乎/小红书直连抓取会被反爬（验证码/登录墙）拦截，
  * 因此统一通过必应检索，再按结果 URL 域名归类到对应来源。
- * @param opts.autoFetch 搜索后是否自动抓取前 2 条结果全文(search_and_read
- *   自会阅读,传入 false 避免重复抓取同一页面)
  */
-async function toolWebSearch(
-  query: string,
-  numResults: number,
-  opts: { autoFetch?: boolean } = {}
-) {
+async function toolWebSearch(query: string, numResults: number) {
   // 抓取足够多的结果再按域名归类
   const items = await searchWeb(query, Math.max(numResults * 3, 15));
 
@@ -235,26 +203,26 @@ async function toolWebSearch(
 
   const results = deduped.slice(0, numResults);
 
-  // 自动抓取前 2 个最相关结果的全文(并行抓取,互不阻塞)
-  let autoFetch: unknown[] = [];
-  if (opts.autoFetch !== false) {
-    const targets = results.filter((r) => r.url && r.url.startsWith("http")).slice(0, 2);
-    const settled = await Promise.allSettled(
-      targets.map((item) => toolFetchWebpage(item.url, 3000))
-    );
-    autoFetch = settled.flatMap((s) => (s.status === "fulfilled" ? [s.value] : []));
+  // 自动抓取前 2 个最相关结果的全文
+  const autoFetch = [];
+  for (const item of results.filter((r) => r.url && r.url.startsWith("http")).slice(0, 2)) {
+    try {
+      const pageResult = await toolFetchWebpage(item.url, 3000);
+      autoFetch.push(pageResult);
+    } catch {
+      // 抓取失败就跳过
+    }
   }
 
   const usedSources = [...new Set(results.map((r) => r.source))];
   const hasResults = results.length > 0;
 
-  // 返回体保持精简:每个字段都会进模型上下文按 token 计费,
-  // 静态说明文字(note)之类一律不加
   return {
     query,
     results: results.map(({ source, ...rest }) => ({ ...rest, source })),
     autoFetched: autoFetch.length > 0 ? autoFetch : undefined,
     source: hasResults ? usedSources.join("+") : "no-results",
+    note: "搜索源：必应（无结果时自动切 DuckDuckGo）；结果按域名归入 必应/百度/知乎/小红书",
   };
 }
 
@@ -379,24 +347,25 @@ async function toolFetchWebpage(url: string, maxLength: number) {
 }
 
 /**
- * 工具：搜索并阅读(多个页面并行阅读,总耗时约等于最慢的一个)
+ * 工具：搜索并阅读
  */
 async function toolSearchAndRead(query: string, readTop: number) {
-  // 1. 先搜索(跳过 web_search 内置的自动全文抓取,避免下面重复阅读同一批页面)
-  const searchResult = await toolWebSearch(query, readTop, { autoFetch: false });
+  // 1. 先搜索
+  const searchResult = await toolWebSearch(query, readTop);
 
-  // 2. 并行阅读前 N 个结果(单页失败不影响其余)
-  const targets = searchResult.results
-    .slice(0, readTop)
-    .filter((item) => item.url && item.url.startsWith("http"));
-
-  const settled = await Promise.allSettled(
-    targets.map((item) => toolFetchWebpage(item.url, 3000))
-  );
-
-  const readings: unknown[] = settled.map((s, i) =>
-    s.status === "fulfilled" ? s.value : { url: targets[i].url, error: "Failed to read" }
-  );
+  // 2. 阅读前 N 个结果
+  const readings: unknown[] = [];
+  for (const item of searchResult.results.slice(0, readTop)) {
+    if (item.url && item.url.startsWith("http")) {
+      try {
+        const readResult = await toolFetchWebpage(item.url, 3000);
+        readings.push(readResult);
+      } catch {
+        // 阅读失败就跳过
+        readings.push({ url: item.url, error: "Failed to read" });
+      }
+    }
+  }
 
   return {
     query,
@@ -442,8 +411,8 @@ async function toolGenerateImage(prompt: string, style: string) {
   });
 
   if (!response.ok) {
-    await response.text().catch(() => null); // 读完释放连接,不回显上游错误内容
-    throw new Error(`Image generation failed: ${response.status}`);
+    const err = await response.text().catch(() => "Unknown error");
+    throw new Error(`Image generation failed: ${response.status} - ${err}`);
   }
 
   const data = await response.json();
@@ -471,17 +440,6 @@ export function toolsToOpenAIFunctions(tools: Tool[]) {
   }));
 }
 
-/** 安全解析模型返回的工具参数 JSON(模型偶尔会输出不合法 JSON,不应让整个流崩掉) */
-function safeParseArguments(raw: unknown): Record<string, unknown> {
-  if (typeof raw !== "string" || !raw.trim()) return {};
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
 /**
  * 从 AI 响应中解析工具调用
  * 支持 OpenAI 格式的 function_call / tool_calls
@@ -503,7 +461,7 @@ export function parseToolCalls(response: unknown): ToolCall[] {
       toolCalls.push({
         id: tc.id as string,
         name: fn.name as string,
-        arguments: safeParseArguments(fn.arguments),
+        arguments: JSON.parse(fn.arguments as string || "{}"),
       });
     }
   }
@@ -514,7 +472,7 @@ export function parseToolCalls(response: unknown): ToolCall[] {
     toolCalls.push({
       id: `call_${Date.now()}`,
       name: fc.name,
-      arguments: safeParseArguments(fc.arguments),
+      arguments: JSON.parse(fc.arguments || "{}"),
     });
   }
 

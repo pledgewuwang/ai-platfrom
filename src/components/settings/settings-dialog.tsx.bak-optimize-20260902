@@ -1,0 +1,380 @@
+"use client";
+
+import React, { useState, useEffect } from "react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Separator } from "@/components/ui/separator";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { useChatStore, type ImageProvider } from "@/store/chat-store";
+import { toast } from "sonner";
+import { Settings, Save, RotateCcw } from "lucide-react";
+
+interface SettingsDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}
+
+const DEFAULT_SETTINGS = {
+  apiProvider: "flux" as ImageProvider,
+  apiKeys: {} as Partial<Record<ImageProvider, string>>,
+  chatApiUrl: "https://api.qnaigc.com/v1",
+  chatProviderKeys: {} as Record<string, string>,
+  chatModel: "openai/gpt-4o-mini",
+  imageModel: "gpt-image",
+  enableTools: true,
+  maxContextTurns: 10,
+  tokenBudget: 4096,
+  modelName: "default",
+};
+
+/** 对话 API 提供商预设(选中即填地址,Key 按域名各存各的) */
+const CHAT_PROVIDERS = [
+  { id: "qiniu", label: "七牛云 (推荐)", url: "https://api.qnaigc.com/v1" },
+  { id: "deepseek", label: "DeepSeek", url: "https://api.deepseek.com/v1" },
+  { id: "zhipu", label: "智谱华章 (GLM)", url: "https://open.bigmodel.cn/api/paas/v4" },
+  { id: "moonshot", label: "月之暗面 (Kimi)", url: "https://api.moonshot.cn/v1" },
+  { id: "minimax", label: "蚂蚁百灵 (MiniMax)", url: "https://api.minimax.chat/v1" },
+  { id: "mimo", label: "小米 MIMO", url: "https://api.xiaomimimo.com/v1" },
+  { id: "openai", label: "OpenAI", url: "https://api.openai.com/v1" },
+  { id: "anthropic", label: "Anthropic (Claude)", url: "https://api.anthropic.com/v1" },
+  {
+    id: "dashscope",
+    label: "阿里云 DashScope (通义)",
+    url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  },
+  { id: "siliconflow", label: "SiliconFlow (硅基流动)", url: "https://api.siliconflow.cn/v1" },
+];
+
+/** 图片生成提供商(每个都有自己的 Key 位置) */
+const IMAGE_PROVIDERS: { id: ImageProvider; label: string }[] = [
+  { id: "gemini", label: "Gemini 3.0 Pro Image" },
+  { id: "kling", label: "可灵 (Kling)" },
+  { id: "flux", label: "Flux (bfl.ml)" },
+  { id: "dall-e", label: "DALL-E 3 (OpenAI)" },
+  { id: "tongyi", label: "通义万相 (DashScope)" },
+];
+
+export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
+  const { settings, updateSettings } = useChatStore();
+
+  const [localSettings, setLocalSettings] = useState(settings);
+
+  // Sync local state when dialog opens
+  useEffect(() => {
+    if (open) {
+      setLocalSettings({ ...settings });
+    }
+  }, [open, settings]);
+
+  const handleSave = () => {
+    updateSettings(localSettings);
+    toast.success("设置已保存");
+    onOpenChange(false);
+  };
+
+  const handleReset = () => {
+    setLocalSettings({ ...DEFAULT_SETTINGS });
+  };
+
+  // 当前对话地址对应的域名:Key 按域名分别保存
+  const chatHost = (() => {
+    try {
+      return new URL(localSettings.chatApiUrl).hostname;
+    } catch {
+      return "";
+    }
+  })();
+  const matchedChatProvider = CHAT_PROVIDERS.find((p) => {
+    try {
+      return new URL(p.url).hostname === chatHost;
+    } catch {
+      return false;
+    }
+  });
+  const chatKeyValue = localSettings.chatProviderKeys?.[chatHost] ?? "";
+  const setChatProviderKey = (key: string) =>
+    setLocalSettings({
+      ...localSettings,
+      chatProviderKeys: {
+        ...(localSettings.chatProviderKeys ?? {}),
+        [chatHost]: key,
+      },
+    });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Settings className="size-5" />
+            设置
+          </DialogTitle>
+          <DialogDescription>配置 API、引擎和对话参数</DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-6">
+          {/* Image Generation API */}
+          <div className="space-y-4">
+            <h3 className="text-sm font-medium text-foreground">图片生成 API</h3>
+
+            <div className="space-y-2">
+              <Label>默认提供商</Label>
+              <Select
+                value={localSettings.apiProvider}
+                onValueChange={(val) =>
+                  setLocalSettings({
+                    ...localSettings,
+                    apiProvider: val as ImageProvider,
+                  })
+                }
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {IMAGE_PROVIDERS.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-3">
+              <p className="text-xs text-muted-foreground">
+                每个提供商的 Key 独立保存，切换时自动使用各自的 Key
+              </p>
+              {IMAGE_PROVIDERS.map((p) => (
+                <div className="space-y-1.5" key={p.id}>
+                  <Label htmlFor={`img-key-${p.id}`}>{p.label} Key</Label>
+                  <Input
+                    id={`img-key-${p.id}`}
+                    type="password"
+                    value={localSettings.apiKeys?.[p.id] ?? ""}
+                    onChange={(e) =>
+                      setLocalSettings({
+                        ...localSettings,
+                        apiKeys: {
+                          ...(localSettings.apiKeys ?? {}),
+                          [p.id]: e.target.value,
+                        },
+                      })
+                    }
+                    placeholder={`${p.label} 的 API Key`}
+                    className="text-sm"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Chat API Configuration */}
+          <div className="space-y-4">
+            <h3 className="text-sm font-medium text-foreground">
+              对话 API 配置
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              配置云端模型 API，用于 AI 对话。留空则使用本地 HR 引擎。
+            </p>
+
+            <div className="space-y-2">
+              <Label>提供商</Label>
+              <Select
+                value={matchedChatProvider?.id ?? "custom"}
+                onValueChange={(val) => {
+                  const p = CHAT_PROVIDERS.find((x) => x.id === val);
+                  if (p) {
+                    setLocalSettings({ ...localSettings, chatApiUrl: p.url });
+                  }
+                }}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {CHAT_PROVIDERS.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.label}
+                    </SelectItem>
+                  ))}
+                  <SelectItem value="custom">自定义…</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="chat-api-url">API 地址</Label>
+              <Input
+                id="chat-api-url"
+                value={localSettings.chatApiUrl}
+                onChange={(e) =>
+                  setLocalSettings({
+                    ...localSettings,
+                    chatApiUrl: e.target.value,
+                  })
+                }
+                placeholder="https://api.qnaigc.com/v1"
+              />
+              <p className="text-xs text-muted-foreground">
+                OpenAI 兼容的 API 地址。仅允许服务端白名单内的域名，自定义地址需在 .env.local 的 CHAT_API_ALLOWED_HOSTS 中配置
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="chat-api-key">
+                API Key{chatHost ? `（${chatHost}）` : ""}
+              </Label>
+              <Input
+                id="chat-api-key"
+                type="password"
+                value={chatKeyValue}
+                onChange={(e) => setChatProviderKey(e.target.value)}
+                placeholder="sk-..."
+              />
+              <p className="text-xs text-muted-foreground">
+                每个提供商的 Key 按域名独立保存，切换提供商会自动带上各自的 Key
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="chat-model">对话模型</Label>
+              <Input
+                id="chat-model"
+                value={localSettings.chatModel}
+                onChange={(e) =>
+                  setLocalSettings({
+                    ...localSettings,
+                    chatModel: e.target.value,
+                  })
+                }
+                placeholder="openai/gpt-4o-mini"
+              />
+              <p className="text-xs text-muted-foreground">
+                模型名称（如 openai/gpt-4o-mini、claude-opus-5、deepseek-chat）
+              </p>
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Context Management */}
+          <div className="space-y-4">
+            <h3 className="text-sm font-medium text-foreground">
+              上下文管理
+            </h3>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="max-turns">
+                  滑动窗口大小（显示消息数）
+                </Label>
+                <span className="text-sm text-muted-foreground font-mono">
+                  {localSettings.maxContextTurns}
+                </span>
+              </div>
+              <input
+                id="max-turns"
+                type="range"
+                min={2}
+                max={50}
+                value={localSettings.maxContextTurns}
+                onChange={(e) =>
+                  setLocalSettings({
+                    ...localSettings,
+                    maxContextTurns: parseInt(e.target.value),
+                  })
+                }
+                className="w-full h-2 rounded-full appearance-none bg-muted cursor-pointer accent-primary"
+              />
+              <div className="flex justify-between text-xs text-muted-foreground">
+                <span>2</span>
+                <span>50</span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                前端显示最近的 N 条消息，完整历史由 HR 引擎自动管理
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="token-budget">Token 预算</Label>
+                <span className="text-sm text-muted-foreground font-mono">
+                  {localSettings.tokenBudget}
+                </span>
+              </div>
+              <input
+                id="token-budget"
+                type="range"
+                min={512}
+                max={32768}
+                step={512}
+                value={localSettings.tokenBudget}
+                onChange={(e) =>
+                  setLocalSettings({
+                    ...localSettings,
+                    tokenBudget: parseInt(e.target.value),
+                  })
+                }
+                className="w-full h-2 rounded-full appearance-none bg-muted cursor-pointer accent-primary"
+              />
+              <div className="flex justify-between text-xs text-muted-foreground">
+                <span>512</span>
+                <span>32K</span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                每次请求的 max_tokens（模型单次回复的长度上限）
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="model-name">模型名称</Label>
+              <Input
+                id="model-name"
+                value={localSettings.modelName}
+                onChange={(e) =>
+                  setLocalSettings({
+                    ...localSettings,
+                    modelName: e.target.value,
+                  })
+                }
+                placeholder="default"
+              />
+              <p className="text-xs text-muted-foreground">
+                发送给 HR 引擎的模型标识
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={handleReset} size="sm">
+            <RotateCcw className="size-4" />
+            重置默认
+          </Button>
+          <Button onClick={handleSave}>
+            <Save className="size-4" />
+            保存设置
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

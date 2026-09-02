@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useChatStore, chatApiKeyFor, type ChatMessage } from "@/store/chat-store";
 import { MessageBubble } from "@/components/chat/message-bubble";
 import { ImageGenerator } from "@/components/chat/image-generator";
@@ -126,18 +126,31 @@ function extractDelta(data: string): string | null {
 }
 
 export default function Home() {
-  // 关键性能:store 里的任何字段变化都会触发此解构所在组件 re-render。
-  // 把用于渲染的最少必要字段直接订阅,action 通过 getState() 取以稳定引用,
-  // 这样流式期间 streamingSlice 的高频更新不会影响此组件(它只订阅了 conversations / settings 等少量字段)。
-  const conversations = useChatStore((s) => s.conversations);
-  const currentConversationId = useChatStore((s) => s.currentConversationId);
-  const settings = useChatStore((s) => s.settings);
-  const loaded = useChatStore((s) => s.loaded);
-  const sidebarOpen = useChatStore((s) => s.sidebarOpen);
-  const settingsOpen = useChatStore((s) => s.settingsOpen);
-  const imageGenOpen = useChatStore((s) => s.imageGenOpen);
-  const isGenerating = useChatStore((s) => s.isGenerating);
-  const streamingSlice = useChatStore((s) => s.streamingSlice);
+  const {
+    conversations,
+    currentConversationId,
+    settings,
+    loaded,
+    sidebarOpen,
+    settingsOpen,
+    imageGenOpen,
+    isGenerating,
+    createConversation,
+    addMessage,
+    updateLastAssistantMessage,
+    updateMessage,
+    truncateMessagesAfter,
+    updateConversationTitle,
+    updateConversationSystemPrompt,
+    persistConversation,
+    setSidebarOpen,
+    setSettingsOpen,
+    setImageGenOpen,
+    setIsGenerating,
+    getCurrentConversation,
+    getDisplayMessages,
+    _init,
+  } = useChatStore();
 
   const [inputValue, setInputValue] = useState("");
   const [webExtractorOpen, setWebExtractorOpen] = useState(false);
@@ -153,8 +166,8 @@ export default function Home() {
 
   // 初始化:设置(localStorage)+ 对话(服务端,含旧数据迁移)
   useEffect(() => {
-    void useChatStore.getState()._init();
-  }, []);
+    void _init();
+  }, [_init]);
 
   // 动态模型列表(云端 + 本地 Ollama)
   useEffect(() => {
@@ -174,6 +187,14 @@ export default function Home() {
     setUsage({ prompt: 0, completion: 0 });
   }
 
+  // Auto-scroll to bottom
+  // 流式期间每个 token 都触发 smooth 滚动会不停重启动画导致卡顿,生成中改 instant
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({
+      behavior: isGenerating ? "auto" : "smooth",
+    });
+  }, [conversations, currentConversationId, isGenerating]);
+
   // Auto-focus textarea
   useEffect(() => {
     if (currentConversationId) {
@@ -181,63 +202,8 @@ export default function Home() {
     }
   }, [currentConversationId]);
 
-  // 全局快捷键:Cmd/Ctrl+/ 聚焦输入框(ChatGPT 风格)
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      // 不在输入控件中时,Cmd/Ctrl + / 聚焦输入
-      if ((e.metaKey || e.ctrlKey) && e.key === "/") {
-        e.preventDefault();
-        textareaRef.current?.focus();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
-  // 内联当前对话(标题/人设展示等用)
-  const currentConversation = currentConversationId
-    ? conversations.find((c) => c.id === currentConversationId)
-    : undefined;
-
-  // 展示列表记忆化:输入等无关状态变化时保持数组引用稳定,
-  // 避免滚动副作用依赖每轮渲染都变化、打字时反复触发滚到底部;
-  // 流式期间 streamingSlice 每个 token 变化,memo 按预期重建(只换最后一条)。
-  const renderedMessages = useMemo(() => {
-    const maxContextTurns = settings.maxContextTurns;
-    const all = currentConversation?.messages ?? [];
-    const display =
-      all.length <= maxContextTurns * 2 ? all : all.slice(-(maxContextTurns * 2));
-    // 流式切片:仅在流式期间,当前对话的最后一条消息会被 streamingSlice 覆盖显示,
-    // 消费 display 的列表组件不会因 token 推送而反复 re-render
-    const lastIsAssistant =
-      display.length > 0 && display[display.length - 1].role === "assistant";
-    const sliceMatches =
-      streamingSlice &&
-      streamingSlice.conversationId === currentConversationId &&
-      lastIsAssistant;
-    return sliceMatches
-      ? [...display.slice(0, -1), streamingSlice.message]
-      : display;
-  }, [currentConversation, settings.maxContextTurns, streamingSlice, currentConversationId]);
-
-  // Auto-scroll to bottom:流式期间每个 token 都触发 scrollIntoView 会重排,
-  // 改用 rAF 合并:同一帧内多次 setState 只触发一次滚动。生成中 instant,其余 smooth。
-  const scrollPendingRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (scrollPendingRef.current !== null) return;
-    scrollPendingRef.current = requestAnimationFrame(() => {
-      scrollPendingRef.current = null;
-      messagesEndRef.current?.scrollIntoView({
-        behavior: isGenerating ? "auto" : "smooth",
-      });
-    });
-    return () => {
-      if (scrollPendingRef.current !== null) {
-        cancelAnimationFrame(scrollPendingRef.current);
-        scrollPendingRef.current = null;
-      }
-    };
-  }, [renderedMessages, currentConversationId, isGenerating]);
+  const currentConversation = getCurrentConversation();
+  const displayMessages = getDisplayMessages();
 
   /** 流式结束后用小请求自动起标题(仅默认标题时) */
   const maybeAutoTitle = async (convId: string) => {
@@ -281,7 +247,7 @@ export default function Home() {
         .trim()
         .replace(/^["'“”《「]+|["'“”》」]+$/g, "")
         .slice(0, 24);
-      if (title) useChatStore.getState().updateConversationTitle(convId, title);
+      if (title) updateConversationTitle(convId, title);
     } catch {
       // 起标题失败无所谓
     }
@@ -297,15 +263,11 @@ export default function Home() {
   ) => {
     if (useChatStore.getState().isGenerating) return;
 
-    // 从 store 实时读取设置:本函数会被「重新生成/编辑重发」等回调捕获,
-    // 若用渲染闭包里的 settings 会拿到过期值(改完设置后重发仍用旧配置)
-    const settings = useChatStore.getState().settings;
-
     const content = newUser?.content ?? "";
     const atts = newUser?.attachments ?? [];
 
     if (newUser) {
-      useChatStore.getState().addMessage(convId, {
+      addMessage(convId, {
         role: "user",
         content,
         imageUrls: atts
@@ -318,12 +280,6 @@ export default function Home() {
     // 组装 API 消息(在加入占位 assistant 之前快照)
     const conversation = useChatStore.getState().conversations.find((c) => c.id === convId);
     if (!conversation) return;
-    // 子 Agent 的用户消息:优先本轮输入;重新生成/编辑重发(无 newUser)时
-    // 取历史里最后一条用户消息,避免给子 Agent 发空串白跑一次
-    const subAgentUserMessage =
-      content ||
-      [...conversation.messages].reverse().find((m) => m.role === "user")?.content ||
-      "";
     let apiMessages = buildApiMessages(
       conversation.messages,
       conversation.systemPrompt,
@@ -357,11 +313,9 @@ export default function Home() {
     }
 
     // 占位 assistant 消息,流式内容往里填
-    useChatStore.getState().addMessage(convId, { role: "assistant", content: "" });
-    useChatStore.getState().setIsGenerating(true);
+    addMessage(convId, { role: "assistant", content: "" });
+    setIsGenerating(true);
 
-    // 提到 try 外:finally 块对 try 内 await 之后的 let 变量在严格 TS 下不可见
-    let fullContent = "";
     try {
       abortControllerRef.current = new AbortController();
 
@@ -379,23 +333,6 @@ export default function Home() {
             parallel: settings.toolParallel,
           },
           tokenBudget: settings.tokenBudget,
-          codeMode: settings.codeMode,
-          codeLanguage: settings.codeLanguage,
-          // 温度分区:聊天 0.7 / 编程模式 0.3
-          temperature: settings.codeMode ? settings.codeTemperature : settings.temperature,
-          // 子 Agent 分工:仅在用户开启 + 预设非空时附带;
-          // 过滤掉角色/提示词为空的不完整预设,避免白跑一次子 Agent 调用
-          subAgents: settings.subAgentEnabled && settings.subAgentPresets.length > 0
-            ? settings.subAgentPresets
-                .filter((p) => p.role.trim() && p.systemPrompt.trim())
-                .map((p) => ({
-                  id: p.id,
-                  role: p.role,
-                  systemPrompt: p.systemPrompt,
-                  userMessage: subAgentUserMessage,
-                  modelName: p.modelName,
-                }))
-            : undefined,
           attachments:
             atts.length > 0
               ? atts.map((a) => ({
@@ -419,9 +356,7 @@ export default function Home() {
         throw new Error(`Chat API error: ${response.status}`);
       }
 
-      // 标记流式开始:把最后一条 assistant 消息快照进 streamingSlice,
-      // 后续每个 token 只更新 slice,不再 setState 整列表 → 列表消息不重渲染
-      useChatStore.getState().beginStream(convId);
+      let fullContent = "";
       await readSseStream(response, (data) => {
         let parsed: {
           type?: string;
@@ -441,18 +376,18 @@ export default function Home() {
         // 工具状态事件:独立 UI,不进正文
         if (parsed.type === "tool_status") {
           if (parsed.status === "running") {
-            useChatStore.getState().updateLastAssistantMessage(convId, undefined, {
+            updateLastAssistantMessage(convId, undefined, {
               appendToolEvent: { label: parsed.label ?? "", status: "running" },
             });
           } else {
-            useChatStore.getState().updateLastAssistantMessage(convId, undefined, {
+            updateLastAssistantMessage(convId, undefined, {
               finishToolEvent: { label: parsed.label ?? "", detail: parsed.detail },
             });
           }
           return;
         }
         if (parsed.type === "tool_summary") {
-          useChatStore.getState().updateLastAssistantMessage(convId, undefined, {
+          updateLastAssistantMessage(convId, undefined, {
             setToolNote: parsed.text,
           });
           return;
@@ -469,9 +404,7 @@ export default function Home() {
         const delta = parsed.choices?.[0]?.delta?.content;
         if (delta) {
           fullContent += delta;
-          // 高频路径:每个 token 只 push 进 streamingSlice,不重建 conversations 数组
-          // 整列表组件不订阅 streamingSlice,自然不会 re-render
-          useChatStore.getState().appendStreamToken(convId, delta);
+          updateLastAssistantMessage(convId, fullContent);
         }
       });
     } catch (error: unknown) {
@@ -481,20 +414,15 @@ export default function Home() {
         const message = error instanceof Error ? error.message : "请求失败";
         const conv = useChatStore.getState().conversations.find((c) => c.id === convId);
         const existing = conv?.messages.findLast((m) => m.role === "assistant")?.content ?? "";
-        useChatStore.getState().updateLastAssistantMessage(
+        updateLastAssistantMessage(
           convId,
           `${existing}\n\n⚠️ 错误：${message}\n\n请检查模型配置，或在设置中调整。`
         );
       }
     } finally {
-      // 把流式期间累加在本地变量里的内容写回 conversations(用于持久化 + 切换对话后仍可见)
-      if (fullContent) {
-        useChatStore.getState().updateLastAssistantMessage(convId, fullContent);
-      }
-      useChatStore.getState().endStream();
-      useChatStore.getState().setIsGenerating(false);
+      setIsGenerating(false);
       abortControllerRef.current = null;
-      useChatStore.getState().persistConversation(convId);
+      persistConversation(convId);
       void maybeAutoTitle(convId);
     }
   };
@@ -505,7 +433,7 @@ export default function Home() {
 
     let convId = currentConversationId;
     if (!convId) {
-      convId = useChatStore.getState().createConversation();
+      convId = createConversation();
     }
 
     setInputValue("");
@@ -516,7 +444,7 @@ export default function Home() {
   };
 
   /** 重新生成:删掉末尾的助手回复,基于同一历史再来一次 */
-  const handleRegenerate = useCallback(() => {
+  const handleRegenerate = () => {
     if (!currentConversationId || isGenerating) return;
     const conv = useChatStore.getState().conversations.find(
       (c) => c.id === currentConversationId
@@ -524,19 +452,19 @@ export default function Home() {
     if (!conv) return;
     const lastUser = [...conv.messages].reverse().find((m) => m.role === "user");
     if (!lastUser) return;
-    useChatStore.getState().truncateMessagesAfter(conv.id, lastUser.id);
+    truncateMessagesAfter(conv.id, lastUser.id);
     void runChat(conv.id);
-  }, [currentConversationId, isGenerating]);
-  const handleEditMessage = useCallback((messageId: string, content: string) => {
+  };
+
+  /** 编辑用户消息:改内容、删掉之后的回复,从该处重新生成 */
+  const handleEditMessage = (messageId: string, content: string) => {
     if (!currentConversationId || isGenerating) return;
-    useChatStore.getState().updateMessage(currentConversationId, messageId, content);
-    useChatStore.getState().truncateMessagesAfter(currentConversationId, messageId);
+    updateMessage(currentConversationId, messageId, content);
+    truncateMessagesAfter(currentConversationId, messageId);
     void runChat(currentConversationId);
-  }, [currentConversationId, isGenerating]);
+  };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    // 中文输入法选词时的 Enter 不发送,避免吞候选词/误发送
-    if (e.nativeEvent.isComposing) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
@@ -545,7 +473,7 @@ export default function Home() {
 
   const handleImageGenerated = (url: string) => {
     if (!currentConversationId) return;
-    useChatStore.getState().addMessage(currentConversationId, {
+    addMessage(currentConversationId, {
       role: "assistant",
       content: "🎨 图片已生成",
       imageUrls: [url],
@@ -563,7 +491,7 @@ export default function Home() {
 
   const saveSystemPrompt = () => {
     if (currentConversationId) {
-      useChatStore.getState().updateConversationSystemPrompt(currentConversationId, systemPromptDraft);
+      updateConversationSystemPrompt(currentConversationId, systemPromptDraft);
     }
     setSystemPromptOpen(false);
   };
@@ -584,7 +512,7 @@ export default function Home() {
       {sidebarOpen && (
         <div
           className="fixed inset-0 bg-black/50 z-30 md:hidden"
-          onClick={() => useChatStore.getState().setSidebarOpen(false)}
+          onClick={() => setSidebarOpen(false)}
         />
       )}
 
@@ -609,13 +537,13 @@ export default function Home() {
               variant="ghost"
               size="icon-sm"
               className="md:hidden"
-              onClick={() => useChatStore.getState().setSidebarOpen(false)}
+              onClick={() => setSidebarOpen(false)}
             >
               <X className="size-4" />
             </Button>
           </div>
 
-          <ConversationList onMobileClose={() => useChatStore.getState().setSidebarOpen(false)} />
+          <ConversationList onMobileClose={() => setSidebarOpen(false)} />
         </div>
       </aside>
 
@@ -626,7 +554,7 @@ export default function Home() {
           <Button
             variant="ghost"
             size="icon-sm"
-            onClick={() => useChatStore.getState().setSidebarOpen(!sidebarOpen)}
+            onClick={() => setSidebarOpen(!sidebarOpen)}
             title="侧边栏"
           >
             <Menu className="size-4" />
@@ -660,7 +588,7 @@ export default function Home() {
           <Button
             variant="ghost"
             size="icon-sm"
-            onClick={() => useChatStore.getState().setImageGenOpen(true)}
+            onClick={() => setImageGenOpen(true)}
             title="图片生成"
           >
             <ImageIcon className="size-4" />
@@ -678,7 +606,7 @@ export default function Home() {
           <Button
             variant="ghost"
             size="icon-sm"
-            onClick={() => useChatStore.getState().setSettingsOpen(true)}
+            onClick={() => setSettingsOpen(true)}
             title="设置"
           >
             <Settings className="size-4" />
@@ -693,7 +621,7 @@ export default function Home() {
                 <div className="flex items-center justify-center h-[50vh] text-sm text-muted-foreground">
                   正在加载对话…
                 </div>
-              ) : renderedMessages.length === 0 ? (
+              ) : displayMessages.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full min-h-[50vh] text-center">
                   <Sparkles className="size-12 text-muted-foreground/30 mb-4" />
                   <h3 className="text-lg font-medium text-muted-foreground mb-2">
@@ -704,7 +632,7 @@ export default function Home() {
                   </p>
                   <Button
                     onClick={() => {
-                      useChatStore.getState().createConversation();
+                      createConversation();
                       setTimeout(() => textareaRef.current?.focus(), 100);
                     }}
                     size="lg"
@@ -716,11 +644,11 @@ export default function Home() {
                 </div>
               ) : (
                 <div className="divide-y divide-transparent">
-                  {renderedMessages.map((message, idx) => (
+                  {displayMessages.map((message, idx) => (
                     <MessageBubble
                       key={message.id}
                       message={message}
-                      isLast={idx === renderedMessages.length - 1}
+                      isLast={idx === displayMessages.length - 1}
                       onRegenerate={handleRegenerate}
                       onEditMessage={handleEditMessage}
                     />
@@ -866,7 +794,7 @@ export default function Home() {
                 size="sm"
                 className="h-6 text-[10px] text-muted-foreground gap-1"
                 onClick={() => {
-                  useChatStore.getState().createConversation();
+                  createConversation();
                   setTimeout(() => textareaRef.current?.focus(), 100);
                 }}
               >
@@ -886,12 +814,12 @@ export default function Home() {
       {/* Dialogs */}
       <ImageGenerator
         open={imageGenOpen}
-        onOpenChange={(v) => useChatStore.getState().setImageGenOpen(v)}
+        onOpenChange={setImageGenOpen}
         onImageGenerated={handleImageGenerated}
       />
       <SettingsDialog
         open={settingsOpen}
-        onOpenChange={(v) => useChatStore.getState().setSettingsOpen(v)}
+        onOpenChange={setSettingsOpen}
       />
       <WebExtractor
         open={webExtractorOpen}

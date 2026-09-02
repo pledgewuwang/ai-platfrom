@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import React, { useState } from "react";
 import {
@@ -14,7 +14,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -22,14 +21,31 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useChatStore, ALL_TOOL_NAMES, type ImageProvider, DEFAULT_SETTINGS, type SubAgentPreset } from "@/store/chat-store";
+import { useChatStore, ALL_TOOL_NAMES, type ImageProvider } from "@/store/chat-store";
 import { toast } from "sonner";
-import { Settings, Save, RotateCcw, Wrench, Plus, Trash2 } from "lucide-react";
+import { Settings, Save, RotateCcw, Wrench } from "lucide-react";
 
 interface SettingsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
+
+const DEFAULT_SETTINGS = {
+  apiProvider: "flux" as ImageProvider,
+  apiKeys: {} as Partial<Record<ImageProvider, string>>,
+  chatApiUrl: "https://api.qnaigc.com/v1",
+  chatProviderKeys: {} as Record<string, string>,
+  chatModel: "openai/gpt-4o-mini",
+  imageModel: "gpt-image",
+  enableTools: true,
+  toolMaxRounds: 5,
+  enabledTools: [...ALL_TOOL_NAMES] as string[],
+  toolAutoRead: true,
+  toolParallel: true,
+  maxContextTurns: 10,
+  tokenBudget: 4096,
+  modelName: "default",
+};
 
 /** 对话 API 提供商预设(选中即填地址,Key 按域名各存各的) */
 const CHAT_PROVIDERS = [
@@ -125,36 +141,6 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     setLocalSettings({
       ...localSettings,
       enabledTools: next.length === 0 ? [...ALL_TOOL_NAMES] : next,
-    });
-  };
-
-  // ── 子 Agent 预设编辑 ──
-  const updatePreset = (id: string, patch: Partial<SubAgentPreset>) => {
-    setLocalSettings({
-      ...localSettings,
-      subAgentPresets: localSettings.subAgentPresets.map((p) =>
-        p.id === id ? { ...p, ...patch } : p
-      ),
-    });
-  };
-  const addPreset = () => {
-    setLocalSettings({
-      ...localSettings,
-      subAgentPresets: [
-        ...localSettings.subAgentPresets,
-        {
-          id: crypto.randomUUID(),
-          role: "",
-          systemPrompt: "",
-          modelName: "",
-        },
-      ],
-    });
-  };
-  const removePreset = (id: string) => {
-    setLocalSettings({
-      ...localSettings,
-      subAgentPresets: localSettings.subAgentPresets.filter((p) => p.id !== id),
     });
   };
 
@@ -438,156 +424,6 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             )}
           </div>
 
-          <Separator />
-
-          {/* Code Mode */}
-          <div className="space-y-4">
-            <h3 className="text-sm font-medium text-foreground">编程模式</h3>
-            <p className="text-xs text-muted-foreground">开启后用最简 system prompt、降低 max_tokens、隐藏中间解释 — 适合日常写代码/改 bug</p>
-            <div className="flex items-center justify-between rounded-lg border border-border p-3">
-              <div className="space-y-0.5">
-                <Label htmlFor="code-mode">启用编程模式</Label>
-                <p className="text-xs text-muted-foreground">所有发往模型的请求都会附上最小可用的 system 提示</p>
-              </div>
-              <Switch
-                id="code-mode"
-                checked={localSettings.codeMode}
-                onCheckedChange={(checked) => setLocalSettings({ ...localSettings, codeMode: checked })}
-              />
-            </div>
-            {localSettings.codeMode && (
-              <div className="space-y-2">
-                <Label htmlFor="code-language">目标语言</Label>
-                <Input
-                  id="code-language"
-                  value={localSettings.codeLanguage}
-                  onChange={(e) => setLocalSettings({ ...localSettings, codeLanguage: e.target.value })}
-                  placeholder="auto / python / typescript / go / rust / ..."
-                />
-                <p className="text-xs text-muted-foreground">给模型的「请用 X 语言回答」信号;留 auto 则不指定</p>
-              </div>
-            )}
-          </div>
-          <Separator />
-
-          {/* 温度分区 */}
-          <div className="space-y-4">
-            <h3 className="text-sm font-medium text-foreground">温度分区</h3>
-            <p className="text-xs text-muted-foreground">按场景分别控制模型随机性:对话偏高更自然,编程偏低更确定;子 Agent 分工统一用 0.3</p>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <Label htmlFor="chat-temp">对话温度</Label>
-                <Input
-                  id="chat-temp"
-                  type="number"
-                  min={0}
-                  max={2}
-                  step={0.1}
-                  value={localSettings.temperature}
-                  onChange={(e) =>
-                    setLocalSettings({ ...localSettings, temperature: Number(e.target.value) })
-                  }
-                />
-                <p className="text-xs text-muted-foreground">普通聊天,默认 0.7</p>
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="code-temp">编程模式温度</Label>
-                <Input
-                  id="code-temp"
-                  type="number"
-                  min={0}
-                  max={2}
-                  step={0.1}
-                  value={localSettings.codeTemperature}
-                  onChange={(e) =>
-                    setLocalSettings({ ...localSettings, codeTemperature: Number(e.target.value) })
-                  }
-                />
-                <p className="text-xs text-muted-foreground">代码输出更确定,默认 0.3</p>
-              </div>
-            </div>
-          </div>
-          <Separator />
-
-          {/* Sub-Agent 分工模式 */}
-          <div className="space-y-4">
-            <h3 className="text-sm font-medium text-foreground">子 Agent 分工模式</h3>
-            <p className="text-xs text-muted-foreground">
-              发送前把问题并行分发给多个子 Agent 各自作答,结果汇总后交给主模型综合回答。子 Agent 可指定降级模型(便宜小模型)省钱。
-            </p>
-            <div className="flex items-center justify-between rounded-lg border border-border p-3">
-              <div className="space-y-0.5">
-                <Label htmlFor="subagent-enabled">启用子 Agent 分工</Label>
-                <p className="text-xs text-muted-foreground">开启且至少配置 1 个预设后,每次提问自动附带子 Agent</p>
-              </div>
-              <Switch
-                id="subagent-enabled"
-                checked={localSettings.subAgentEnabled}
-                onCheckedChange={(checked) =>
-                  setLocalSettings({ ...localSettings, subAgentEnabled: checked })
-                }
-              />
-            </div>
-
-            {localSettings.subAgentEnabled && (
-              <div className="space-y-3">
-                {localSettings.subAgentPresets.map((p, i) => (
-                  <div key={p.id} className="space-y-2 rounded-lg border border-border p-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-medium text-muted-foreground">
-                        子 Agent {i + 1}
-                      </span>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 px-2 text-muted-foreground hover:text-destructive"
-                        onClick={() => removePreset(p.id)}
-                      >
-                        <Trash2 className="size-3.5" />
-                      </Button>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="space-y-1">
-                        <Label className="text-xs">角色名</Label>
-                        <Input
-                          value={p.role}
-                          onChange={(e) => updatePreset(p.id, { role: e.target.value })}
-                          placeholder="如:研究员 / 翻译 / 审稿人"
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <Label className="text-xs">模型（留空用主模型）</Label>
-                        <Input
-                          value={p.modelName ?? ""}
-                          onChange={(e) => updatePreset(p.id, { modelName: e.target.value })}
-                          placeholder="降级模型,如 gpt-4o-mini"
-                        />
-                      </div>
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs">角色提示词</Label>
-                      <Textarea
-                        value={p.systemPrompt}
-                        onChange={(e) => updatePreset(p.id, { systemPrompt: e.target.value })}
-                        placeholder="该子 Agent 的 system 提示词,定义它的分工与输出要求"
-                        rows={2}
-                      />
-                    </div>
-                  </div>
-                ))}
-                <Button type="button" variant="outline" size="sm" onClick={addPreset}>
-                  <Plus className="size-3.5" />
-                  添加子 Agent
-                </Button>
-                {localSettings.subAgentPresets.length === 0 && (
-                  <p className="text-xs text-muted-foreground">
-                    尚未配置预设 — 点「添加子 Agent」创建,角色名与提示词均不能为空
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
           <Separator />
 
           {/* Context Management */}

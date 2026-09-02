@@ -7,35 +7,11 @@ import path from "path";
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { prompt, apiKey, apiProvider = "flux", referenceImages } = body as {
+    const { prompt, apiKey, apiProvider = "flux" } = body as {
       prompt: string;
       apiKey: string;
       apiProvider: ImageProvider;
-      referenceImages?: { url: string; mimeType?: string }[];
     };
-
-    // 参考图:上限 4 张,单张最大 10MB(与上传接口一致,防止被塞大图
-    // 导致 Gemini 端点拒收或账单失控);非 gemini provider 直接拒绝
-    const MAX_REFS = 4;
-    const MAX_REF_SIZE = 10 * 1024 * 1024;
-    const cleanedRefs =
-      Array.isArray(referenceImages)
-        ? referenceImages
-            .filter(
-              (r) =>
-                r &&
-                typeof r.url === "string" &&
-                (r.url.startsWith("data:") || r.url.startsWith("http"))
-            )
-            .slice(0, MAX_REFS)
-            .filter((r) => r.url.length <= MAX_REF_SIZE * 2)
-        : [];
-    if (cleanedRefs.length > 0 && apiProvider !== "gemini") {
-      return Response.json(
-        { error: "参考图当前仅支持 Gemini 模式(其它 provider 暂不支持 image-to-image)" },
-        { status: 400 }
-      );
-    }
 
     if (!prompt) {
       return Response.json({ error: "prompt is required" }, { status: 400 });
@@ -49,9 +25,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Generate image via provider API
-    const result = await generateImage(prompt, apiKey, apiProvider, {
-      referenceImages: cleanedRefs,
-    });
+    const result = await generateImage(prompt, apiKey, apiProvider);
 
     // Download and save locally
     // data: URL 是本地字节,无 SSRF 风险;http(s) 走防护(防伪造的上游把下载地址指向内网)
@@ -86,7 +60,6 @@ export async function POST(request: NextRequest) {
       provider: apiProvider,
       createdAt: new Date().toISOString(),
       originalUrl: result.url,
-      referenceCount: cleanedRefs.length,
     };
     await writeFile(metaPath, JSON.stringify(meta, null, 2));
 

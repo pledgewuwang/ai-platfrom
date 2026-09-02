@@ -1,5 +1,5 @@
-﻿import { NextRequest } from "next/server";
-import { chatCompletionStream, ChatMessage, retrieveMemoryBlock, ingestTurn } from "@/lib/hr-client";
+import { NextRequest } from "next/server";
+import { chatCompletionStream, ChatMessage } from "@/lib/hr-client";
 import {
   cloudChatStream,
   validateChatApiUrl,
@@ -16,8 +16,6 @@ import {
   type ToolResult,
 } from "@/lib/tools";
 import { buildVisionMessage, type MediaAttachment } from "@/lib/vision";
-import { runSubAgents, formatSubAgentResults, type SubAgent } from "@/lib/sub-agent";
-import { cloudChat } from "@/lib/cloud-chat";
 
 /** SSE 响应头(正文流与错误流共用) */
 const SSE_HEADERS = {
@@ -102,7 +100,6 @@ export async function POST(request: NextRequest) {
       tokenBudget,
       codeMode = false,
       codeLanguage = "auto",
-      temperature,
     } = body as {
       codeMode?: boolean;
       codeLanguage?: string;
@@ -116,7 +113,6 @@ export async function POST(request: NextRequest) {
       toolSettings?: ToolSettings;
       attachments?: MediaAttachment[];
       tokenBudget?: number;
-      temperature?: number;
     };
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
@@ -126,57 +122,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 决定本轮实际使用的模型(子 Agent / 主对话 / 工具循环 都要用):
-    //  - conversationModel:本对话可覆盖全局
-    //  - chatModel:前端下发的全局模型
-    //  - model:旧版兼容
-    // 必须放在所有引用 effectiveModel 的代码之前,否则子 Agent 块就 ReferenceError
-    const effectiveModel = conversationModel || chatModel || model;
-
-    // ── 子 Agent 分工模式 ──
-    // 前端可随请求下发 subAgents:[];每个子 Agent 独立调用一次非流式 chat,
-    // 所有结果汇总后作为一条额外的 user 消息注入主对话上下文,
-    // 由主模型基于子结果生成最终答复。
-    // 子 Agent 可指定 modelName,支持「降级模型」(用便宜小模型处理机械子任务)。
-    const subAgents = Array.isArray((body as Record<string, unknown>).subAgents)
-      ? ((body as Record<string, unknown>).subAgents as SubAgent[])
-      : [];
-    if (subAgents.length > 0) {
-      const safeAgents = subAgents.slice(0, 6);
-      const subResults = await runSubAgents(
-        async (params) => {
-          const url = chatApiUrl || "";
-          const key = chatApiKey || "";
-          if (!url || !key) {
-            throw new Error("子 Agent 需要 chatApiUrl/chatApiKey(在设置里配置云端模型)");
-          }
-          const content = await cloudChat(
-            params.messages as { role: "system" | "user" | "assistant"; content: string }[],
-            url,
-            key,
-            params.model,
-            params.max_tokens,
-            params.temperature,
-            params.signal,
-          );
-          return { content };
-        },
-        safeAgents,
-        effectiveModel
-      );
-      const summary = formatSubAgentResults(subResults);
-      if (summary) {
-        let lastUserIdx = messages.length;
-        for (let i = messages.length - 1; i >= 0; i--) {
-          if (messages[i].role === "user") { lastUserIdx = i; break; }
-        }
-        messages.splice(lastUserIdx, 0, {
-          role: "system",
-          content: "[子 Agent 分工结果 — 共 " + subResults.length + " 个;仅供参考,引用时按 [role] 标记]\n" + summary,
-        } as ChatMessage);
-      }
-    }
-
+    const effectiveModel = conversationModel || chatModel || "default";
     const isOllama = effectiveModel.startsWith("ollama/");
     // 编程模式:用最短的 system prompt 给模型发「按编程场景回答」信号,
     // token 预算自动降一档(代码生成典型只需要 2-4K 就能给出可用答案),
@@ -224,26 +170,8 @@ export async function POST(request: NextRequest) {
         effectiveModel,
         maxTokens,
         activeTools,
-        toolSettings ?? {},
-        temperature
+        toolSettings ?? {}
       );
-    }
-
-    // ── 分级记忆注入(云端对话) ──
-    // 发给云端模型前,从本地分级检索库召回相关历史记忆注入 system,
-    // 让云端模型也"记得"本地长期记忆(HR 服务不可用时静默跳过)。
-    let lastUserText = "";
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "user") {
-        lastUserText = typeof messages[i].content === "string" ? messages[i].content : "";
-        break;
-      }
-    }
-    if (!isOllama && chatApiUrl && lastUserText && lastUserText.length >= 6) {
-      const memoryBlock = await retrieveMemoryBlock(lastUserText.slice(0, 200));
-      if (memoryBlock) {
-        messages.unshift({ role: "system", content: memoryBlock } as ChatMessage);
-      }
     }
 
     // 简单模式：直接流式响应
@@ -258,52 +186,14 @@ export async function POST(request: NextRequest) {
         "ollama",
         effectiveModel.replace("ollama/", ""),
         undefined,
-        { trustedUrl: true, maxTokens, temperature }
+        { trustedUrl: true, maxTokens }
       );
     } else if (chatApiUrl && chatApiKey && chatModel) {
-      // 云端直连(带记忆注入后的 messages)
       stream = await cloudChatStream(messages, chatApiUrl, chatApiKey, effectiveModel, undefined, {
         maxTokens,
-        temperature,
       });
     } else {
       stream = await chatCompletionStream(messages, model);
-    }
-
-    // ── 对话后入库(分级记忆持续积累) ──
-    // 用 TransformStream 拦截 SSE:提取 assistant 输出全文,流结束后
-    // fire-and-forget 写入分级检索库(失败静默,不阻塞响应)。
-    if (!isOllama && lastUserText && lastUserText.length >= 6) {
-      const encoder = new TextEncoder();
-      const decoder = new TextDecoder();
-      let assistantText = "";
-      const tapped = stream.pipeThrough(
-        new TransformStream({
-          transform(chunk, controller) {
-            const text = decoder.decode(chunk, { stream: true });
-            // 解析 SSE data: 行,提取 delta.content(OpenAI 流式格式)
-            for (const line of text.split("\n")) {
-              if (!line.startsWith("data: ")) continue;
-              const payload = line.slice(6).trim();
-              if (!payload || payload === "[DONE]") continue;
-              try {
-                const j = JSON.parse(payload);
-                const delta = j.choices?.[0]?.delta?.content;
-                if (typeof delta === "string") assistantText += delta;
-              } catch { /* 忽略非 JSON 行 */ }
-            }
-            controller.enqueue(encoder.encode(text));
-          },
-        })
-      );
-      const userSnapshot = lastUserText;
-      // 入库时机:延迟到流大概率结束(轻量方案;transform 持续累积 assistantText)
-      setTimeout(() => {
-        if (assistantText.trim()) {
-          ingestTurn(userSnapshot, assistantText.slice(0, 20000)).catch(() => {});
-        }
-      }, 15000);
-      return new Response(tapped, { headers: SSE_HEADERS });
     }
 
     return new Response(stream, { headers: SSE_HEADERS });
@@ -324,8 +214,7 @@ async function handleToolLoop(
   model: string,
   maxTokens: number,
   activeTools: ReturnType<typeof getEnabledTools>,
-  toolSettings: ToolSettings,
-  temperature?: number
+  toolSettings: ToolSettings
 ): Promise<Response> {
   // 与 cloudChatStream 相同的 SSRF 防护:https + 白名单 + 内网地址拦截
   const baseUrl = await validateChatApiUrl(apiBaseUrl);
@@ -388,8 +277,6 @@ async function handleToolLoop(
                 tools: toolsToOpenAIFunctions(activeTools),
                 tool_choice: "auto",
                 max_tokens: maxTokens,
-                // 温度仅在显式传入时下发
-                ...(temperature !== undefined ? { temperature } : {}),
               }),
             },
             chatApiGuard()

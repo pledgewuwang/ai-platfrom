@@ -1,7 +1,5 @@
 import { create } from "zustand";
-import { randomUUID } from "node:crypto";
-// 与 db.ts 一致:用 node:crypto.randomUUID 替代 uuid 包,少一个依赖
-const uuidv4 = randomUUID;
+import { v4 as uuidv4 } from "uuid";
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -45,38 +43,9 @@ export interface Settings {
   chatModel: string;   // 对话模型名称(可自选任意 ID)
   imageModel: string;  // 图片生成模型
   enableTools: boolean; // 启用 AI 工具调用（搜索/爬取）
-  /** 工具调用链路设置 */
-  toolMaxRounds: number;   // 工具循环最大轮数(1-10,防无限循环)
-  enabledTools: string[]; // 启用的工具白名单(按名称过滤)
-  toolAutoRead: boolean;   // web_search 后自动阅读前 2 条结果全文
-  toolParallel: boolean;   // 同一轮的多个工具调用并行执行
-  /** 编程模式:开启后系统提示词/上下文裁剪/工具行为都按编程场景优化(省 token) */
-  codeMode: boolean;
-  /** 编程模式下的目标语言(用于给模型发「用 X 语言回答」信号) */
-  codeLanguage: string;
   maxContextTurns: number; // 滑动窗口大小
   tokenBudget: number;    // 每次请求的 max_tokens
   modelName: string;
-  /** 对话温度(聊天模式,默认 0.7;编程模式下由 codeTemperature 覆盖) */
-  temperature: number;
-  /** 编程模式温度(默认 0.3,代码输出更确定、更省 token) */
-  codeTemperature: number;
-  /** 子 Agent 分工模式:用户自定义的预设 subAgents(在请求前自动附带) */
-  subAgentPresets: SubAgentPreset[];
-  /** 是否默认启用子 Agent 分工模式(为 true 且 subAgentPresets 非空时,每次请求自动带上预设) */
-  subAgentEnabled: boolean;
-}
-
-/** 用户预设的子 Agent(在设置面板里编辑,发请求时随主请求一起发出)
- *  - role: 简短角色名,如 researcher / summarizer
- *  - systemPrompt: 该子 Agent 的 system 提示词
- *  - modelName: 可选,留空使用主对话模型;想用降级模型就填便宜小模型
- */
-export interface SubAgentPreset {
-  id: string;
-  role: string;
-  systemPrompt: string;
-  modelName?: string;
 }
 
 export interface ChatState {
@@ -87,9 +56,6 @@ export interface ChatState {
 
   // Settings
   settings: Settings;
-
-  /** 流式期间独立的最后一条消息引用(订阅此字段的组件随 token re-render,但不会触发整列表重渲染) */
-  streamingSlice: { conversationId: string; message: ChatMessage } | null;
 
   // UI State
   sidebarOpen: boolean;
@@ -108,9 +74,6 @@ export interface ChatState {
   updateConversationSystemPrompt: (id: string, systemPrompt: string) => void;
 
   addMessage: (conversationId: string, message: Omit<ChatMessage, "id" | "timestamp">) => void;
-  beginStream: (conversationId: string) => void;
-  appendStreamToken: (conversationId: string, token: string) => void;
-  endStream: () => void;
   updateLastAssistantMessage: (
     conversationId: string,
     content?: string,
@@ -120,13 +83,6 @@ export interface ChatState {
       setToolNote?: string;
     }
   ) => void;
-  /** 往当前正在流式回复的助手消息追加一段文本(高频调用,只重建最后一条消息)
-   * - 内部直读 conversations,跳过中间层,避免每次 setState 序列化整个对话数组
-   * - 通过写入单独的 streamingSlice 引用,订阅者只在 slice 变化时 re-render
-   */
-
-  /** 结束流式时清空 streamingSlice,正常进入持久化流程 */
-
   updateMessage: (conversationId: string, messageId: string, content: string) => void;
   truncateMessagesAfter: (conversationId: string, messageId: string) => void;
 
@@ -143,15 +99,7 @@ export interface ChatState {
 
 /* ── Defaults ──────────────────────────────────────────── */
 
-/** 全部可用工具名(与 lib/tools.ts 的 AVAILABLE_TOOLS 保持一致) */
-export const ALL_TOOL_NAMES = [
-  "web_search",
-  "fetch_webpage",
-  "search_and_read",
-  "generate_image",
-] as const;
-
-export const DEFAULT_SETTINGS: Settings = {
+const DEFAULT_SETTINGS: Settings = {
   apiProvider: "flux",
   apiKeys: {},
   chatApiUrl: "https://api.qnaigc.com/v1",
@@ -159,19 +107,9 @@ export const DEFAULT_SETTINGS: Settings = {
   chatModel: "openai/gpt-4o-mini",
   imageModel: "gpt-image",
   enableTools: true,
-  toolMaxRounds: 5,
-  enabledTools: [...ALL_TOOL_NAMES],
-  toolAutoRead: true,
-  toolParallel: true,
-  codeMode: false,
-  codeLanguage: 'auto',
   maxContextTurns: 10,
   tokenBudget: 4096,
   modelName: "default",
-  temperature: 0.7,
-  codeTemperature: 0.3,
-  subAgentPresets: [],
-  subAgentEnabled: false,
 };
 
 /* ── Settings:仍存 localStorage(设备各自的密钥配置) ──── */
@@ -206,21 +144,6 @@ function loadSettings(): Settings {
 
     merged.apiKeys = merged.apiKeys ?? {};
     merged.chatProviderKeys = merged.chatProviderKeys ?? {};
-    // 工具白名单:旧数据无此字段时给默认全量;存在但非法时回退
-    if (!Array.isArray(merged.enabledTools) || merged.enabledTools.length === 0) {
-      merged.enabledTools = [...ALL_TOOL_NAMES];
-    }
-    // 编程模式字段默认补全
-    if (typeof merged.codeMode !== 'boolean') merged.codeMode = false;
-    if (typeof merged.codeLanguage !== 'string' || !merged.codeLanguage) {
-      merged.codeLanguage = 'auto';
-    }
-    // 子 Agent 字段默认补全
-    if (!Array.isArray(merged.subAgentPresets)) merged.subAgentPresets = [];
-    if (typeof merged.subAgentEnabled !== 'boolean') merged.subAgentEnabled = false;
-    // 温度分区字段默认补全
-    if (typeof merged.temperature !== 'number' || !(merged.temperature >= 0)) merged.temperature = 0.7;
-    if (typeof merged.codeTemperature !== 'number' || !(merged.codeTemperature >= 0)) merged.codeTemperature = 0.3;
     return merged;
   } catch {
     return DEFAULT_SETTINGS;
@@ -288,7 +211,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   currentConversationId: null,
   loaded: false,
   settings: DEFAULT_SETTINGS,
-  streamingSlice: null,
   sidebarOpen: true,
   settingsOpen: false,
   imageGenOpen: false,
@@ -436,24 +358,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (updated) void persistToServer(updated);
   },
 
-  /**
-   * 流式开始:把 conversations 里最后一条 assistant 消息快照进 streamingSlice。
-   * 调用方在拿到流式响应首字节前调用一次,后续 appendStreamToken 会原地更新 content。
-   * 关键性能点:只动 streamingSlice,不动 conversations 列表,避免整列表随 token re-render。
-   */
-  beginStream: (conversationId: string) => {
-    set((state) => {
-      const conv = state.conversations.find((c) => c.id === conversationId);
-      if (!conv) return state;
-      let last = undefined;
-      for (let i = conv.messages.length - 1; i >= 0; i--) {
-        if (conv.messages[i].role === "assistant") { last = conv.messages[i]; break; }
-      }
-      if (!last) return state;
-      return { streamingSlice: { conversationId, message: last } };
-    });
-  },
-
   // 流式期间高频调用:只改内存,持久化由调用方在结束后 persistConversation
   updateLastAssistantMessage: (conversationId, content, extras) => {
     set((state) => {
@@ -535,28 +439,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       saveSettings(settings);
       return { settings };
     });
-  },
-
-  /** 高频流式更新:只动 streamingSlice,不动 conversations 列表。
-   * 订阅 streamingSlice 的组件会随 token re-render,但整列表组件不会。
-   * 收到第一个 token 时把整条消息快照进 slice(后续只 patch content)。
-   */
-  appendStreamToken: (conversationId: string, token: string) => {
-    set((state) => {
-      // 没在流式就忽略(防御:被覆盖、重发时旧流未清)
-      if (!state.streamingSlice || state.streamingSlice.conversationId !== conversationId) return state;
-      const prev = state.streamingSlice.message;
-      if (!token) return state;
-      return {
-        streamingSlice: {
-          conversationId,
-          message: { ...prev, content: prev.content + token },
-        },
-      };
-    });
-  },
-  endStream: () => {
-    set({ streamingSlice: null });
   },
 
   setSidebarOpen: (open) => set({ sidebarOpen: open }),

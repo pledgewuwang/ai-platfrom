@@ -62,7 +62,7 @@ export function MediaUpload({
 
         if (isImage) {
           // 图片落服务端,拿到持久 URL —— 刷新/换设备后历史里的图还能显示
-          preview = await uploadImage(file.name, base64, file.type);
+          preview = await uploadImage(file.name, base64);
         }
 
         newAttachments.push({
@@ -158,15 +158,11 @@ export function MediaUpload({
   );
 }
 
-async function uploadImage(
-  filename: string,
-  base64: string,
-  contentType: string
-): Promise<string> {
+async function uploadImage(filename: string, base64: string): Promise<string> {
   const res = await fetch("/api/images/upload", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ filename, data: base64, contentType }),
+    body: JSON.stringify({ filename, data: base64 }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));

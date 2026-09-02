@@ -20,7 +20,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useChatStore, type ImageProvider } from "@/store/chat-store";
-import { ImageIcon, Loader2, Sparkles, Upload, X } from "lucide-react";
+import { ImageIcon, Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
 interface ImageGeneratorProps {
@@ -42,51 +42,11 @@ export function ImageGenerator({
   );
   const [generating, setGenerating] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  /** 参考图(仅 Gemini 模式生效):本地 data URL 数组 */
-  const [referenceImages, setReferenceImages] = useState<{ url: string; mimeType: string }[]>([]);
-  const [uploadingRef, setUploadingRef] = useState(false);
 
   // key 按提供商分开存:切换提供商自动用各自的 key
   const providerKey = settings.apiKeys?.[provider] ?? "";
   const setProviderKey = (key: string) =>
     updateSettings({ apiKeys: { ...(settings.apiKeys ?? {}), [provider]: key } });
-
-  /** 上传参考图(走服务端 upload API 落盘,失败降级为 data URL)
-   * 上限 4 张,超出会被服务端拒绝
-   */
-  const handleRefUpload = async (file: File) => {
-    if (referenceImages.length >= 4) {
-      toast.error("最多 4 张参考图");
-      return;
-    }
-    if (file.size > 10 * 1024 * 1024) {
-      toast.error("单张图片不能超过 10MB");
-      return;
-    }
-    setUploadingRef(true);
-    try {
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const r = new FileReader();
-        r.onload = () => resolve(r.result as string);
-        r.onerror = () => reject(new Error("读取失败"));
-        r.readAsDataURL(file);
-      });
-      const base64 = dataUrl.split(",")[1] || "";
-      const res = await fetch("/api/images/upload", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: file.name, data: base64, contentType: file.type }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json.url) throw new Error(json.error || "上传失败");
-      setReferenceImages((prev) => [...prev, { url: json.url, mimeType: file.type }]);
-    } catch (e: unknown) {
-      const m = e instanceof Error ? e.message : "上传失败";
-      toast.error(m);
-    } finally {
-      setUploadingRef(false);
-    }
-  };
 
   const handleGenerate = async () => {
     if (!prompt.trim()) {
@@ -110,7 +70,6 @@ export function ImageGenerator({
           prompt: prompt.trim(),
           apiKey: providerKey,
           apiProvider: provider,
-          referenceImages: provider === "gemini" ? referenceImages : [],
         }),
       });
 
@@ -231,66 +190,6 @@ export function ImageGenerator({
             <p className="text-xs text-muted-foreground">
               Ctrl+Enter 快速生成
             </p>
-          </div>
-
-          {/* 参考图(仅 Gemini 模式生效) */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label>参考图（仅 Gemini）</Label>
-              {referenceImages.length > 0 && (
-                <button
-                  onClick={() => setReferenceImages([])}
-                  className="text-xs text-muted-foreground hover:text-foreground"
-                >
-                  清空
-                </button>
-              )}
-            </div>
-            {referenceImages.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {referenceImages.map((ref, idx) => (
-                  <div key={idx} className="relative group/ref size-16 rounded-md overflow-hidden border border-border">
-                    <img
-                      src={ref.url}
-                      alt={`ref ${idx + 1}`}
-                      className="w-full h-full object-cover"
-                    />
-                    <button
-                      onClick={() => setReferenceImages((prev) => prev.filter((_, i) => i !== idx))}
-                      className="absolute top-0 right-0 p-0.5 bg-black/60 text-white rounded-bl-md opacity-0 group-hover/ref:opacity-100 transition-opacity"
-                      title="删除"
-                    >
-                      <X className="size-3" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <label
-              className="flex items-center justify-center gap-1.5 rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground cursor-pointer hover:bg-muted/40 transition-colors"
-            >
-              <Upload className="size-3.5" />
-              {uploadingRef ? "上传中..." : `点击上传（${referenceImages.length}/4）`}
-              <input
-                type="file"
-                accept="image/png,image/jpeg,image/webp,image/gif"
-                multiple
-                className="hidden"
-                disabled={uploadingRef || referenceImages.length >= 4}
-                onChange={(e) => {
-                  const files = Array.from(e.target.files ?? []);
-                  // 批量选择时按剩余容量截断:并发上传都读旧 state,
-                  // 不截断会绕过 4 张上限(选 6 张全传)
-                  const remaining = 4 - referenceImages.length;
-                  files.slice(0, remaining).forEach((f) => handleRefUpload(f));
-                  if (files.length > remaining) toast.error("最多 4 张参考图,已忽略多余文件");
-                  e.target.value = ""; // 允许重复上传同一文件
-                }}
-              />
-            </label>
-            {referenceImages.length > 0 && provider !== "gemini" && (
-              <p className="text-[10px] text-yellow-500">⚠️ 当前模型不支持参考图，提交时将被忽略</p>
-            )}
           </div>
 
           {/* Provider Selection */}

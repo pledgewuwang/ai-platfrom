@@ -157,7 +157,6 @@ export async function smartCrawl(
   content = cleanText(content);
 
   // 9. 截断到最大长度
-  const extractedSize = content.length;
   if (opts.maxContentLength && content.length > opts.maxContentLength) {
     content = content.slice(0, opts.maxContentLength) + "\n\n[... 内容已截断]";
   }

@@ -1,25 +1,9 @@
-﻿/**
+/**
  * 图片生成客户端
- * 支持多个 provider:flux, dall-e, gemini, kling, tongyi
- *
- * 参考图(image-to-image / 草图/垫图)目前仅 gemini 模式支持:
- *  - 走 Gemini 多模态生成端点,直接把 base64 图片作为 inline_data 传入
- *  - 其它 provider(images/generations 端点)直接忽略,前端会提示用户
+ * 支持多个 provider：flux, dall-e, gemini, kling, tongyi
  */
 
 export type ImageProvider = "flux" | "dall-e" | "gemini" | "kling" | "tongyi";
-
-export interface ReferenceImage {
-  /** 完整 data URL 或服务端落盘后的 http(s) URL */
-  url: string;
-  /** 客户端的 mime,用于多模态 payload;可空,服务端会尝试从 url 推断 */
-  mimeType?: string;
-}
-
-export interface ImageGenOptions {
-  /** 参考图:仅 gemini provider 生效 */
-  referenceImages?: ReferenceImage[];
-}
 
 export interface ImageGenResult {
   url: string;
@@ -33,8 +17,7 @@ export interface ImageGenResult {
 export async function generateImage(
   prompt: string,
   apiKey: string,
-  apiProvider: ImageProvider = "flux",
-  options: ImageGenOptions = {}
+  apiProvider: ImageProvider = "flux"
 ): Promise<ImageGenResult> {
   switch (apiProvider) {
     case "flux":
@@ -42,7 +25,7 @@ export async function generateImage(
     case "dall-e":
       return generateWithDallE(prompt, apiKey);
     case "gemini":
-      return generateWithGemini(prompt, apiKey, options.referenceImages);
+      return generateWithGemini(prompt, apiKey);
     case "kling":
       return generateWithKling(prompt, apiKey);
     case "tongyi":
@@ -172,20 +155,12 @@ async function generateWithDallE(
 }
 
 /**
- * Gemini 图片生成(通过七牛云中转)
- * - 无参考图:走 /v1/images/generations(简单 prompt -> 图片)
- * - 有参考图:走 /v1beta/models/...:generateContent 多模态端点,
- *   把图片作为 inline_data parts 传入,Gemini 视觉生成会基于参考图编辑
+ * Gemini 3.0 Pro Image（通过七牛云中转）
  */
 async function generateWithGemini(
   prompt: string,
-  apiKey: string,
-  referenceImages?: ReferenceImage[]
+  apiKey: string
 ): Promise<ImageGenResult> {
-  // 有参考图时走多模态端点;images/generations 端点不支持 image 输入
-  if (referenceImages && referenceImages.length > 0) {
-    return generateWithGeminiMultimodal(prompt, apiKey, referenceImages);
-  }
   const response = await fetch(
     "https://api.qnaigc.com/v1/images/generations",
     {
@@ -204,114 +179,30 @@ async function generateWithGemini(
   );
 
   if (!response.ok) {
-    await response.text().catch(() => null);
+    await response.text().catch(() => null); // 读完释放连接,不回显上游错误内容
     throw new Error(`Gemini Image error: ${response.status}`);
   }
 
   const data = await response.json();
-  return extractGeminiImageResponse(data, "gemini");
-}
+  const image = data.data?.[0];
 
-/**
- * Gemini 多模态图片生成:支持参考图(image-to-image / 草图)
- * 端点:POST /v1beta/models/{model}:generateContent
- * parts 格式:
- *   { text: prompt }
- *   { inline_data: { mime_type, data } }  // 每张参考图一个
- */
-async function generateWithGeminiMultimodal(
-  prompt: string,
-  apiKey: string,
-  referenceImages: ReferenceImage[]
-): Promise<ImageGenResult> {
-  const parts: Array<Record<string, unknown>> = [{ text: prompt }];
-
-  for (const ref of referenceImages.slice(0, 4)) {
-    const inline = await fetchAsInlineData(ref);
-    if (!inline) continue; // 抓取失败的参考图跳过,不让整次请求炸掉
-    parts.push({ inline_data: { mime_type: inline.mimeType, data: inline.data } });
-  }
-
-  if (parts.length === 1) {
-    throw new Error("Gemini multimodal: 没有可用的参考图(全部下载失败)");
-  }
-
-  const response = await fetch(
-    "https://api.qnaigc.com/v1beta/models/gemini-2.0-flash-exp:generateContent",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts }],
-        generationConfig: { responseModalities: ["IMAGE", "TEXT"] },
-      }),
-    }
-  );
-
-  if (!response.ok) {
-    await response.text().catch(() => null);
-    throw new Error(`Gemini multimodal error: ${response.status}`);
-  }
-
-  const data = await response.json();
-  // 复用统一解析:
-  // 多模态响应里图片在 candidates[0].content.parts[*].inline_data.data
-  const candidate = data.candidates?.[0]?.content?.parts ?? [];
-  for (const part of candidate) {
-    if (part.inline_data?.data) {
-      const mime = part.inline_data.mime_type || "image/png";
-      return {
-        url: `data:${mime};base64,${part.inline_data.data}`,
-        provider: "gemini",
-      };
-    }
-  }
-  throw new Error("Gemini multimodal: 响应中没有图片");
-}
-
-/** 把参考图转成 Gemini 多模态所需的 { mimeType, base64 data }
- *  - data URL:直接拆出 mime 和 base64
- *  - http(s) URL:走 guardedFetch 拉取再转 base64(防 SSRF)
- */
-async function fetchAsInlineData(ref: ReferenceImage): Promise<{ mimeType: string; data: string } | null> {
-  try {
-    if (ref.url.startsWith("data:")) {
-      const m = ref.url.match(/^data:([^;]+);base64,(.*)$/);
-      if (!m) return null;
-      return { mimeType: ref.mimeType || m[1], data: m[2] };
-    }
-    // http(s):走 SSRF 防护抓取,再转 base64
-    const { guardedFetch } = await import("./url-guard");
-    const r = await guardedFetch(ref.url);
-    if (!r.ok) return null;
-    const ab = await r.arrayBuffer();
-    const b64 = Buffer.from(ab).toString("base64");
-    // mime 优先用客户端声明,否则从 content-type 头拿,再回落 png
-    const mime = ref.mimeType || (r.headers.get("content-type") || "image/png").split(";")[0];
-    return { mimeType: mime, data: b64 };
-  } catch {
-    return null;
-  }
-}
-
-/** 从 images/generations 响应里提取 b64/url 字段 */
-function extractGeminiImageResponse(data: unknown, provider: ImageProvider): ImageGenResult {
-  type ImageResponse = { data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }> };
-  const image = (data as ImageResponse)?.data?.[0];
   if (image?.b64_json) {
     return {
       url: `data:image/png;base64,${image.b64_json}`,
       revisedPrompt: image.revised_prompt,
-      provider,
+      provider: "gemini",
     };
   }
+
   if (image?.url) {
-    return { url: image.url, revisedPrompt: image.revised_prompt, provider };
+    return {
+      url: image.url,
+      revisedPrompt: image.revised_prompt,
+      provider: "gemini",
+    };
   }
-  throw new Error(`${provider}: No image in response`);
+
+  throw new Error("Gemini: No image in response");
 }
 
 /**

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 云端对话 API 客户端
  * 直接对接 OpenAI 兼容的云端模型 API(如七牛云、OpenAI、DeepSeek 等)
  *
@@ -91,8 +91,7 @@ export async function validateChatApiUrl(apiBaseUrl: string): Promise<string> {
   }
 }
 
-/** max_tokens 归一化:默认 4096,范围 [256, 32768](chat 路由与工具循环共用) */
-export function clampMaxTokens(value: unknown): number {
+function clampMaxTokens(value: number | undefined): number {
   const n = Number(value) || 4096;
   return Math.min(Math.max(n, 256), 32768);
 }
@@ -105,8 +104,6 @@ export interface CloudChatStreamOptions {
   trustedUrl?: boolean;
   /** 请求的 max_tokens,默认 4096,范围 [256, 32768] */
   maxTokens?: number;
-  /** 采样温度(0-2)。不传则用上游默认值 */
-  temperature?: number;
 }
 
 /**
@@ -133,10 +130,6 @@ export async function cloudChatStream(
       messages,
       stream: true,
       max_tokens: maxTokens,
-      // 温度仅在显式传入时下发,避免覆盖上游默认值
-      ...(options.temperature !== undefined
-        ? { temperature: options.temperature }
-        : {}),
     }),
     signal,
   };
@@ -169,19 +162,9 @@ export async function cloudChat(
   apiBaseUrl: string,
   apiKey: string,
   model: string,
-  maxTokens?: number,
-  temperature?: number,
-  signal?: AbortSignal
+  maxTokens?: number
 ): Promise<string> {
   const url = `${await validateChatApiUrl(apiBaseUrl)}/chat/completions`;
-
-  const body: Record<string, unknown> = {
-    model,
-    messages,
-    max_tokens: clampMaxTokens(maxTokens),
-  };
-  // temperature 仅在显式传入时下发,避免覆盖上游默认值
-  if (temperature !== undefined) body.temperature = temperature;
 
   const response = await guardedFetch(
     url,
@@ -191,8 +174,11 @@ export async function cloudChat(
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify(body),
-      signal,
+      body: JSON.stringify({
+        model,
+        messages,
+        max_tokens: clampMaxTokens(maxTokens),
+      }),
     },
     chatApiGuard()
   );
