@@ -34,7 +34,7 @@ import {
 interface ModelOption {
   id: string;
   label: string;
-  group: "cloud" | "local" | "custom" | "top" | "budget";
+  group: "cloud" | "local" | "custom";
 }
 
 const CUSTOM_MODEL_OPTION = "__custom__";
@@ -483,9 +483,8 @@ export default function Home() {
     settings.chatModel && !knownIds.has(settings.chatModel)
       ? [{ id: settings.chatModel, label: settings.chatModel, group: "custom" }]
       : [];
-const topModels = models.filter((m) => m.group === "top");
-const budgetModels = models.filter((m) => m.group === "budget" || m.group === "cloud");
-const localModels = models.filter((m) => m.group === "local");
+  const cloudModels = models.filter((m) => m.group === "cloud");
+  const localModels = models.filter((m) => m.group === "local");
 
   return (
     <div className="h-screen flex bg-background text-foreground overflow-hidden">
@@ -664,22 +663,13 @@ const localModels = models.filter((m) => m.group === "local");
                 }}
                 className="text-[11px] bg-muted/50 border border-input rounded-md px-2 py-1 max-w-[200px] truncate focus:outline-none focus:ring-1 focus:ring-ring"
               >
-                <optgroup label="🏆 顶级模型">
-                  {topModels.map((m) => (
+                <optgroup label="☁️ 云端">
+                  {cloudModels.map((m) => (
                     <option key={m.id} value={m.id}>
                       {m.label}
                     </option>
                   ))}
                 </optgroup>
-                {budgetModels.length > 0 && (
-                  <optgroup label="💰 性价比模型">
-                    {budgetModels.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.label}
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
                 {localModels.length > 0 && (
                   <optgroup label="🖥️ 本地 Ollama">
                     {localModels.map((m) => (

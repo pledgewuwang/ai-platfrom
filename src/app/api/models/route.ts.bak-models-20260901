@@ -3,22 +3,16 @@ export const dynamic = "force-dynamic";
 interface ModelOption {
   id: string;
   label: string;
-  group: "cloud" | "local" | "top" | "budget";
+  group: "cloud" | "local";
 }
 
 const CLOUD_MODELS: ModelOption[] = [
-  // 🏆 顶级模型
-  { id: "claude-opus-5", label: "Claude Opus 5", group: "top" },
-  { id: "deepseek-reasoner", label: "DeepSeek R1", group: "top" },
-  { id: "openai/gpt-4.1", label: "GPT-4.1", group: "top" },
-  { id: "qwen3-235b-a22b", label: "Qwen3 235B", group: "top" },
-  // 💰 性价比模型
-  { id: "openai/gpt-4.1-mini", label: "GPT-4.1 Mini", group: "budget" },
-  { id: "deepseek-chat", label: "DeepSeek Chat V3", group: "budget" },
-  { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", group: "budget" },
-  { id: "glm-4.7-flash", label: "GLM-4.7 Flash", group: "budget" },
-  { id: "qwen3-30b-a3b", label: "Qwen3 30B", group: "budget" },
-  { id: "kimi-k2", label: "Kimi K2", group: "budget" },
+  { id: "openai/gpt-4o-mini", label: "GPT-4o Mini", group: "cloud" },
+  { id: "openai/gpt-4o", label: "GPT-4o", group: "cloud" },
+  { id: "openai/gpt-4.1-mini", label: "GPT-4.1 Mini", group: "cloud" },
+  { id: "claude-opus-5", label: "Claude Opus 5", group: "cloud" },
+  { id: "deepseek-chat", label: "DeepSeek", group: "cloud" },
+  { id: "glm-4.6", label: "GLM-4.6", group: "cloud" },
 ];
 
 /** 模型列表 = 静态云端模型 + 本地 Ollama 已装模型 */
