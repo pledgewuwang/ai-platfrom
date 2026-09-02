@@ -62,9 +62,10 @@ const CHAT_PROVIDERS = [
 
 /** 图片生成提供商(每个都有自己的 Key 位置) */
 const IMAGE_PROVIDERS: { id: ImageProvider; label: string }[] = [
+  { id: "gemini", label: "Gemini 3.0 Pro Image" },
+  { id: "kling", label: "可灵 (Kling)" },
   { id: "flux", label: "Flux (bfl.ml)" },
   { id: "dall-e", label: "DALL-E 3 (OpenAI)" },
-  { id: "gpt-image-2", label: "GPT Image 2 (七牛云)" },
   { id: "tongyi", label: "通义万相 (DashScope)" },
 ];
 

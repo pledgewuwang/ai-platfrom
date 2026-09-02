@@ -3,7 +3,7 @@
  * 支持多个 provider：flux, dall-e, tongyi
  */
 
-export type ImageProvider = "flux" | "dall-e" | "gpt-image" | "gpt-image-2" | "tongyi";
+export type ImageProvider = "flux" | "dall-e" | "gemini" | "kling" | "tongyi";
 
 export interface ImageGenResult {
   url: string;
@@ -24,9 +24,9 @@ export async function generateImage(
       return generateWithFlux(prompt, apiKey);
     case "dall-e":
       return generateWithDallE(prompt, apiKey);
-    case "gpt-image":
-    case "gpt-image-2":
-      return generateWithGptImage(prompt, apiKey);
+    case "gemini":
+    case "kling":
+      return generateWithKling(prompt, apiKey);
     case "tongyi":
       return generateWithTongyi(prompt, apiKey);
     default:
@@ -154,10 +154,10 @@ async function generateWithDallE(
 }
 
 /**
- * GPT Image 2（七牛云中转）图片生成
- * 异步任务模式：提交任务 → 轮询状态 → 获取结果
+ * Gemini 3.0 Pro Image（通过七牛云中转）
  */
-async function generateWithGptImage(
+
+async function generateWithGemini(
   prompt: string,
   apiKey: string
 ): Promise<ImageGenResult> {
@@ -170,7 +170,7 @@ async function generateWithGptImage(
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: "openai/gpt-image-2",
+        model: "gemini-3.0-pro-image-preview",
         prompt,
         n: 1,
         size: "1024x1024",
@@ -180,7 +180,7 @@ async function generateWithGptImage(
 
   if (!response.ok) {
     await response.text().catch(() => null); // 读完释放连接,不回显上游错误内容
-    throw new Error(`GPT Image 2 error: ${response.status}`);
+    throw new Error(`Gemini Image error: ${response.status}`);
   }
 
   const data = await response.json();
@@ -190,7 +190,7 @@ async function generateWithGptImage(
     return {
       url: `data:image/png;base64,${image.b64_json}`,
       revisedPrompt: image.revised_prompt,
-      provider: "gpt-image",
+      provider: "gemini",
     };
   }
 
@@ -198,11 +198,62 @@ async function generateWithGptImage(
     return {
       url: image.url,
       revisedPrompt: image.revised_prompt,
-      provider: "gpt-image",
+      provider: "gemini",
     };
   }
 
-  throw new Error("GPT Image 2: No image in response");
+  throw new Error("Gemini: No image in response");
+}
+
+/**
+ * 可灵 (Kling)（通过七牛云中转）
+ */
+async function generateWithKling(
+  prompt: string,
+  apiKey: string
+): Promise<ImageGenResult> {
+  const response = await fetch(
+    "https://api.qnaigc.com/v1/images/generations",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "kling-v1",
+        prompt,
+        n: 1,
+        size: "1024x1024",
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    await response.text().catch(() => null);
+    throw new Error(`Kling Image error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  const image = data.data?.[0];
+
+  if (image?.b64_json) {
+    return {
+      url: `data:image/png;base64,${image.b64_json}`,
+      revisedPrompt: image.revised_prompt,
+      provider: "kling",
+    };
+  }
+
+  if (image?.url) {
+    return {
+      url: image.url,
+      revisedPrompt: image.revised_prompt,
+      provider: "kling",
+    };
+  }
+
+  throw new Error("Kling: No image in response");
 }
 
 /**

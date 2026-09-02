@@ -36,9 +36,9 @@ export function ImageGenerator({
 }: ImageGeneratorProps) {
   const { settings, updateSettings } = useChatStore();
   const [prompt, setPrompt] = useState("");
-  // 旧版本存的 "gpt-image" 映射到 "gpt-image-2"(同一个生成通道)
+  // 旧版本存的 "gemini" 映射到 "gemini"(同一个生成通道)
   const [provider, setProvider] = useState<ImageProvider>(
-    settings.apiProvider === "gpt-image" ? "gpt-image-2" : settings.apiProvider
+    settings.apiProvider === "gemini" ? "gemini" : settings.apiProvider
   );
   const [generating, setGenerating] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -85,7 +85,7 @@ export function ImageGenerator({
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "生成失败";
       // 尝试备选模型
-      if (provider === "gpt-image" || provider === "gpt-image-2") {
+      if (provider === "gemini") {
         toast.error(message + "，尝试 DALL-E 3...");
         try {
           const fallbackResponse = await fetch("/api/image/generate", {
@@ -210,7 +210,7 @@ export function ImageGenerator({
               <SelectContent>
                 <SelectItem value="flux">⚡ Flux (快速)</SelectItem>
                 <SelectItem value="dall-e">🎨 DALL-E 3</SelectItem>
-                <SelectItem value="gpt-image-2">🖼️ GPT Image 2</SelectItem>
+                <SelectItem value="gemini">🖼️ GPT Image 2</SelectItem>
                 <SelectItem value="tongyi">🇨🇳 通义万相</SelectItem>
               </SelectContent>
             </Select>

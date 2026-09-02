@@ -31,7 +31,7 @@ export interface Conversation {
   systemPrompt?: string; // 每对话系统提示词/人设
 }
 
-export type ImageProvider = "flux" | "dall-e" | "gpt-image" | "gpt-image-2" | "tongyi";
+export type ImageProvider = "flux" | "dall-e" | "gemini" | "kling" | "tongyi";
 
 export interface Settings {
   apiProvider: ImageProvider;
@@ -126,8 +126,8 @@ function loadSettings(): Settings {
     const merged: Settings = { ...DEFAULT_SETTINGS, ...(saved as Partial<Settings>) };
 
     // 兼容旧版单 key 设置,迁移到按提供商分存
-    if (merged.apiProvider === ("gpt-image" as ImageProvider)) {
-      merged.apiProvider = "gpt-image-2";
+    if (merged.apiProvider === ("gemini" as ImageProvider)) {
+      merged.apiProvider = "gemini";
     }
     if (typeof saved.apiKey === "string" && saved.apiKey) {
       const provider = merged.apiProvider;

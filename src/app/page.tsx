@@ -34,7 +34,7 @@ import {
 interface ModelOption {
   id: string;
   label: string;
-  group: "cloud" | "local" | "custom" | "top" | "budget";
+  group: "cloud" | "local" | "custom" | "top" | "budget" | "top" | "budget";
 }
 
 const CUSTOM_MODEL_OPTION = "__custom__";
