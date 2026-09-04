@@ -1,8 +1,5 @@
 "use client"
 
-export const dynamic = "force-dynamic";
-
-
 import { Suspense, FormEvent, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { LockKeyhole, LoaderCircle, ShieldCheck } from "lucide-react";

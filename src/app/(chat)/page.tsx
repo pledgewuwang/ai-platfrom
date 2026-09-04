@@ -40,6 +40,7 @@ import {
   ShieldCheck,
   LoaderCircle,
   Feather,
+  MessagesSquare,
 } from "lucide-react";
 
 interface ModelOption {
@@ -747,9 +748,24 @@ export default function Home() {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 flex flex-col min-w-0 h-full">
+      <main
+        className={
+          "flex-1 flex flex-col min-w-0 h-full transition-colors " +
+          (settings.codeMode
+            ? // 编程模式:多色径向渐变营造专注氛围
+              "bg-[radial-gradient(ellipse_at_top,rgba(99,102,241,0.10),transparent_60%),radial-gradient(ellipse_at_bottom_right,rgba(217,70,239,0.08),transparent_50%)]"
+            : "")
+        }
+      >
         {/* Header */}
-        <header className="flex items-center gap-3 px-4 h-14 border-b border-border flex-shrink-0">
+        <header
+          className={
+            "flex items-center gap-3 px-4 h-14 flex-shrink-0 border-b transition-colors " +
+            (settings.codeMode
+              ? "border-violet-500/40 bg-gradient-to-r from-indigo-500/[0.08] via-violet-500/[0.10] to-fuchsia-500/[0.08] shadow-[0_1px_8px_rgba(168,85,247,0.08)]"
+              : "border-border")
+          }
+        >
           <Button
             variant="ghost"
             size="icon-sm"
@@ -763,6 +779,50 @@ export default function Home() {
             <h2 className="text-sm font-medium truncate">
               {currentConversation?.title || "新对话"}
             </h2>
+          </div>
+
+          {/* 主模式切换(显式):对话 ⇄ 编程 —— 多色渐变避免单一色调 */}
+          <div
+            role="tablist"
+            aria-label="主模式切换"
+            className={
+              "flex shrink-0 items-center gap-0.5 rounded-md border p-0.5 transition-colors " +
+              (settings.codeMode
+                ? "border-violet-500/40 bg-gradient-to-r from-violet-500/10 via-fuchsia-500/10 to-pink-500/10 shadow-[0_0_0_1px_rgba(168,85,247,0.15)]"
+                : "border-sky-500/30 bg-gradient-to-r from-sky-500/5 via-cyan-500/5 to-blue-500/5")
+            }
+            title={settings.codeMode ? "编程模式已开启:最小 system prompt,降低 token 预算" : "点击切换到编程模式"}
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={!settings.codeMode}
+              onClick={() => useChatStore.getState().updateSettings({ codeMode: false })}
+              className={
+                "flex items-center gap-1 rounded px-2.5 py-1 text-[12px] transition-all duration-200 " +
+                (!settings.codeMode
+                  ? "bg-gradient-to-r from-sky-500 to-blue-500 text-white shadow-sm ring-1 ring-sky-500/30"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted/40")
+              }
+            >
+              <MessagesSquare className="size-3.5" />
+              对话
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={settings.codeMode}
+              onClick={() => useChatStore.getState().updateSettings({ codeMode: true })}
+              className={
+                "flex items-center gap-1 rounded px-2.5 py-1 text-[12px] transition-all duration-200 " +
+                (settings.codeMode
+                  ? "bg-gradient-to-r from-indigo-500 via-violet-500 to-fuchsia-500 text-white shadow-md ring-1 ring-violet-500/40"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted/40")
+              }
+            >
+              <Code2 className="size-3.5" />
+              编程
+            </button>
           </div>
 
           {currentConversation?.systemPrompt?.trim() && (
@@ -785,34 +845,44 @@ export default function Home() {
           </Button>
 
           {settings.codeMode && (
-            <div className="flex items-center gap-0.5 rounded-md border border-border p-0.5">
-              <button
-                type="button"
-                onClick={() => useChatStore.getState().updateSettings({ codeModeType: "auto" })}
-                title="自动化编程:直接产出最终代码"
-                className={
-                  "px-2 py-0.5 rounded text-[11px] transition-colors " +
-                  (settings.codeModeType === "auto"
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground")
-                }
+            <>
+              {/* 编程模式徽标:多色渐变 + 阴影 */}
+              <span
+                title="编程模式:最小 system prompt,降低 token 预算"
+                className="hidden items-center gap-1 rounded-md border border-violet-500/40 bg-gradient-to-r from-indigo-500/15 via-violet-500/15 to-fuchsia-500/15 px-2 py-0.5 text-[10.5px] font-medium text-violet-700 shadow-sm md:inline-flex dark:text-violet-300"
               >
-                自动化
-              </button>
-              <button
-                type="button"
-                onClick={() => useChatStore.getState().updateSettings({ codeModeType: "collab" })}
-                title="人机协作编程:代码进入右侧工作区迭代"
-                className={
-                  "px-2 py-0.5 rounded text-[11px] transition-colors " +
-                  (settings.codeModeType === "collab"
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground")
-                }
-              >
-                协作
-              </button>
-            </div>
+                <Code2 className="size-3" />
+                编程模式
+              </span>
+              <div className="flex items-center gap-0.5 rounded-md border border-violet-500/30 bg-violet-500/5 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => useChatStore.getState().updateSettings({ codeModeType: "auto" })}
+                  title="自动化编程:直接产出最终代码"
+                  className={
+                    "rounded px-2 py-0.5 text-[11px] transition-all duration-200 " +
+                    (settings.codeModeType === "auto"
+                      ? "bg-gradient-to-r from-indigo-500 to-violet-500 text-white shadow-sm ring-1 ring-indigo-500/30"
+                      : "text-muted-foreground hover:text-foreground hover:bg-violet-500/10")
+                  }
+                >
+                  自动化
+                </button>
+                <button
+                  type="button"
+                  onClick={() => useChatStore.getState().updateSettings({ codeModeType: "collab" })}
+                  title="人机协作编程:代码进入右侧工作区迭代"
+                  className={
+                    "rounded px-2 py-0.5 text-[11px] transition-all duration-200 " +
+                    (settings.codeModeType === "collab"
+                      ? "bg-gradient-to-r from-violet-500 to-fuchsia-500 text-white shadow-sm ring-1 ring-violet-500/30"
+                      : "text-muted-foreground hover:text-foreground hover:bg-violet-500/10")
+                  }
+                >
+                  协作
+                </button>
+              </div>
+            </>
           )}
 
           {settings.codeMode && settings.codeModeType === "collab" && (
@@ -1054,7 +1124,9 @@ export default function Home() {
                   onKeyDown={handleKeyDown}
                   placeholder={
                     currentConversationId
-                      ? "输入消息... (Enter 发送, Shift+Enter 换行)"
+                      ? settings.codeMode
+                        ? "输入编程需求(Enter 发送, Shift+Enter 换行)"
+                        : "输入消息... (Enter 发送, Shift+Enter 换行)"
                       : "开始新对话..."
                   }
                   rows={1}
