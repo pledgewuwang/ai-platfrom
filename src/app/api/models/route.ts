@@ -4,21 +4,33 @@ interface ModelOption {
   id: string;
   label: string;
   group: "cloud" | "local" | "top" | "budget";
+  /** 默认网关(OpenAI 兼容 base url);前端选模型时自动切换 */
+  gateway?: string;
 }
 
 const CLOUD_MODELS: ModelOption[] = [
-  // 🏆 顶级模型
-  { id: "claude-opus-5", label: "Claude Opus 5", group: "top" },
-  { id: "deepseek-reasoner", label: "DeepSeek R1", group: "top" },
-  { id: "openai/gpt-4.1", label: "GPT-4.1", group: "top" },
-  { id: "qwen3-235b-a22b", label: "Qwen3 235B", group: "top" },
+  // 🏆 顶级模型（七牛云聚合 + DeepSeek 官方）
+  { id: "claude-sonnet-5", label: "Claude 5 Sonnet", group: "top", gateway: "https://api.qnaigc.com/v1" },
+  { id: "claude-opus-5", label: "Claude 5 Opus", group: "top", gateway: "https://api.qnaigc.com/v1" },
+  { id: "claude-fable-5", label: "Claude 5 Fable", group: "top", gateway: "https://api.qnaigc.com/v1" },
+  { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", group: "top", gateway: "https://api.qnaigc.com/v1" },
+  { id: "openai/gpt-5.6-terra", label: "GPT-5.6 Terra", group: "top", gateway: "https://api.qnaigc.com/v1" },
+  { id: "openai/gpt-5.6-luna", label: "GPT-5.6 Luna", group: "top", gateway: "https://api.qnaigc.com/v1" },
+  { id: "grok-4.5", label: "Grok 4.5", group: "top", gateway: "https://api.qnaigc.com/v1" },
+  { id: "qwen3.8-max", label: "Qwen3.8 Max", group: "top", gateway: "https://api.qnaigc.com/v1" },
+  { id: "deepseek-reasoner", label: "DeepSeek R1", group: "top", gateway: "https://api.deepseek.com/v1" },
+  { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", group: "top", gateway: "https://api.deepseek.com/v1" },
+  { id: "openai/gpt-4.1", label: "GPT-4.1", group: "top", gateway: "https://api.qnaigc.com/v1" },
+  { id: "qwen3-235b-a22b", label: "Qwen3 235B", group: "top", gateway: "https://api.qnaigc.com/v1" },
   // 💰 性价比模型
-  { id: "openai/gpt-4.1-mini", label: "GPT-4.1 Mini", group: "budget" },
-  { id: "deepseek-chat", label: "DeepSeek Chat V3", group: "budget" },
-  { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", group: "budget" },
-  { id: "glm-4.7-flash", label: "GLM-4.7 Flash", group: "budget" },
-  { id: "qwen3-30b-a3b", label: "Qwen3 30B", group: "budget" },
-  { id: "kimi-k2", label: "Kimi K2", group: "budget" },
+  { id: "openai/gpt-4.1-mini", label: "GPT-4.1 Mini", group: "budget", gateway: "https://api.qnaigc.com/v1" },
+  { id: "deepseek-chat", label: "DeepSeek Chat V3", group: "budget", gateway: "https://api.deepseek.com/v1" },
+  { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", group: "budget", gateway: "https://api.deepseek.com/v1" },
+  { id: "glm-4.7-flash", label: "GLM-4.7 Flash", group: "budget", gateway: "https://open.bigmodel.cn/api/paas/v4" },
+  { id: "qwen3-30b-a3b", label: "Qwen3 30B", group: "budget", gateway: "https://api.qnaigc.com/v1" },
+  { id: "kimi-k2", label: "Kimi K2", group: "budget", gateway: "https://api.moonshot.cn/v1" },
+  { id: "mimo-v2.5", label: "MiMo V2.5", group: "budget", gateway: "https://api.xiaomimimo.com/v1" },
+  { id: "mimo-v2.5-pro", label: "MiMo V2.5 Pro", group: "budget", gateway: "https://api.xiaomimimo.com/v1" },
 ];
 
 /** 模型列表 = 静态云端模型 + 本地 Ollama 已装模型 */

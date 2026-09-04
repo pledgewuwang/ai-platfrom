@@ -46,17 +46,24 @@ interface ModelOption {
   id: string;
   label: string;
   group: "cloud" | "local" | "custom" | "top" | "budget";
+  gateway?: string;
 }
 
 const CUSTOM_MODEL_OPTION = "__custom__";
 
 const FALLBACK_MODELS: ModelOption[] = [
-  { id: "openai/gpt-4o-mini", label: "GPT-4o Mini", group: "cloud" },
-  { id: "openai/gpt-4o", label: "GPT-4o", group: "cloud" },
-  { id: "openai/gpt-4.1-mini", label: "GPT-4.1 Mini", group: "cloud" },
-  { id: "claude-opus-5", label: "Claude Opus 5", group: "cloud" },
-  { id: "deepseek-chat", label: "DeepSeek", group: "cloud" },
-  { id: "glm-4.6", label: "GLM-4.6", group: "cloud" },
+  { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", group: "cloud", gateway: "https://api.qnaigc.com/v1" },
+  { id: "openai/gpt-5.6-terra", label: "GPT-5.6 Terra", group: "cloud", gateway: "https://api.qnaigc.com/v1" },
+  { id: "openai/gpt-5.6-luna", label: "GPT-5.6 Luna", group: "cloud", gateway: "https://api.qnaigc.com/v1" },
+  { id: "claude-sonnet-5", label: "Claude 5 Sonnet", group: "cloud", gateway: "https://api.qnaigc.com/v1" },
+  { id: "claude-opus-5", label: "Claude 5 Opus", group: "cloud", gateway: "https://api.qnaigc.com/v1" },
+  { id: "claude-fable-5", label: "Claude 5 Fable", group: "cloud", gateway: "https://api.qnaigc.com/v1" },
+  { id: "grok-4.5", label: "Grok 4.5", group: "cloud", gateway: "https://api.qnaigc.com/v1" },
+  { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", group: "cloud", gateway: "https://api.deepseek.com/v1" },
+  { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", group: "cloud", gateway: "https://api.deepseek.com/v1" },
+  { id: "qwen3.8-max", label: "Qwen3.8 Max", group: "cloud", gateway: "https://api.qnaigc.com/v1" },
+  { id: "mimo-v2.5", label: "MiMo V2.5", group: "cloud", gateway: "https://api.xiaomimimo.com/v1" },
+  { id: "mimo-v2.5-pro", label: "MiMo V2.5 Pro", group: "cloud", gateway: "https://api.xiaomimimo.com/v1" },
 ];
 
 /**
@@ -957,7 +964,10 @@ export default function Home() {
                     return;
                   }
                   setCustomModelOpen(false);
-                  useChatStore.getState().updateSettings({ chatModel: v });
+                  const gw = models.find((m) => m.id === v)?.gateway;
+                  useChatStore.getState().updateSettings(
+                    gw ? { chatModel: v, chatApiUrl: gw } : { chatModel: v }
+                  );
                 }}
                 className="text-[11px] bg-muted/50 border border-input rounded-md px-2 py-1 max-w-[200px] truncate focus:outline-none focus:ring-1 focus:ring-ring"
               >
