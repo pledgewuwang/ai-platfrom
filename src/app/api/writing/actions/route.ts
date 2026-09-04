@@ -15,7 +15,8 @@ import { tail } from "@/lib/writing/text";
 import type { WritingAction } from "@/lib/writing/types";
 
 export const runtime = "nodejs";
-export const maxDuration = 600;
+// Vercel Hobby 计划 Serverless 上限 300s（本地/自部署可改回 600）
+export const maxDuration = 300;
 
 const SSE_HEADERS = {
   "Content-Type": "text/event-stream",
