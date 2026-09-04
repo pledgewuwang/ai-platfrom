@@ -22,7 +22,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useChatStore, ALL_TOOL_NAMES, type ImageProvider, DEFAULT_SETTINGS, type SubAgentPreset } from "@/store/chat-store";
+import { useChatStore, ALL_TOOL_NAMES, type ImageProvider, DEFAULT_SETTINGS, type SubAgentPreset, resolveRoutedModel } from "@/store/chat-store";
+import { CHAT_PROVIDERS } from "@/lib/models";
 import { toast } from "sonner";
 import { Settings, Save, RotateCcw, Wrench, Plus, Trash2 } from "lucide-react";
 
@@ -32,23 +33,6 @@ interface SettingsDialogProps {
 }
 
 /** 对话 API 提供商预设(选中即填地址,Key 按域名各存各的) */
-const CHAT_PROVIDERS = [
-  { id: "qiniu", label: "七牛云 (推荐)", url: "https://api.qnaigc.com/v1" },
-  { id: "deepseek", label: "DeepSeek", url: "https://api.deepseek.com/v1" },
-  { id: "zhipu", label: "智谱华章 (GLM)", url: "https://open.bigmodel.cn/api/paas/v4" },
-  { id: "moonshot", label: "月之暗面 (Kimi)", url: "https://api.moonshot.cn/v1" },
-  { id: "minimax", label: "蚂蚁百灵 (MiniMax)", url: "https://api.minimax.chat/v1" },
-  { id: "mimo", label: "小米 MIMO", url: "https://api.xiaomimimo.com/v1" },
-  { id: "openai", label: "OpenAI", url: "https://api.openai.com/v1" },
-  { id: "anthropic", label: "Anthropic (Claude)", url: "https://api.anthropic.com/v1" },
-  {
-    id: "dashscope",
-    label: "阿里云 DashScope (通义)",
-    url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-  },
-  { id: "siliconflow", label: "SiliconFlow (硅基流动)", url: "https://api.siliconflow.cn/v1" },
-];
-
 /** 图片生成提供商(每个都有自己的 Key 位置) */
 const IMAGE_PROVIDERS: { id: ImageProvider; label: string }[] = [
   { id: "gemini", label: "Gemini 3.0 Pro Image" },
@@ -60,9 +44,10 @@ const IMAGE_PROVIDERS: { id: ImageProvider; label: string }[] = [
 
 /** 工具名称 → 展示名/说明(与 lib/tools.ts 的 AVAILABLE_TOOLS 对应) */
 const TOOL_META: Record<string, { label: string; desc: string }> = {
-  web_search: { label: "网页搜索", desc: "必应/DuckDuckGo 检索最新信息" },
+  web_search: { label: "网页搜索", desc: "必应+百度聚合,兜底搜狗/Yahoo,可定向知乎/小红书/微信" },
   fetch_webpage: { label: "读取网页", desc: "抓取指定 URL 的正文内容" },
   search_and_read: { label: "搜索并阅读", desc: "检索后自动阅读前几条结果" },
+  github: { label: "GitHub 查询", desc: "搜仓库/读源码/查 issue/看提交历史(公共数据无需登录)" },
   generate_image: { label: "生成图片", desc: "AI 优化提示词后生成图片" },
 };
 
@@ -88,7 +73,10 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   };
 
   const handleReset = () => {
-    setLocalSettings({ ...DEFAULT_SETTINGS });
+    if (window.confirm("确定要重置所有设置吗?自定义 API Key 与预设将被清除。")) {
+      setLocalSettings({ ...DEFAULT_SETTINGS });
+      toast.info("设置已恢复默认值,记得点保存");
+    }
   };
 
   // 当前对话地址对应的域名:Key 按域名分别保存
@@ -156,6 +144,18 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
       ...localSettings,
       subAgentPresets: localSettings.subAgentPresets.filter((p) => p.id !== id),
     });
+  };
+
+  // ── Agent 集群:更新第 i 路配置(数组按需扩到 count 长度) ──
+  const updateClusterSlot = (
+    i: number,
+    field: "agentClusterApiUrls" | "agentClusterKeys" | "agentClusterModels",
+    value: string
+  ) => {
+    const arr = [...(localSettings[field] ?? [])];
+    while (arr.length < (localSettings.agentClusterCount ?? 1)) arr.push("");
+    arr[i] = value;
+    setLocalSettings({ ...localSettings, [field]: arr });
   };
 
   return (
@@ -434,6 +434,52 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                     }
                   />
                 </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="svsg-url">SVSG 视觉语义网关地址</Label>
+                  <Input
+                    id="svsg-url"
+                    type="text"
+                    placeholder="http://127.0.0.1:3002"
+                    value={localSettings.svsgApiUrl ?? ""}
+                    onChange={(e) =>
+                      setLocalSettings({ ...localSettings, svsgApiUrl: e.target.value })
+                    }
+                  />
+                  <div className="space-y-2">
+                    <Label htmlFor="svsg-key">SVSG API Key（可选）</Label>
+                    <Input
+                      id="svsg-key"
+                      type="password"
+                      placeholder="服务端未设置 SVSG_API_KEY 时留空"
+                      value={localSettings.svsgApiKey ?? ""}
+                      onChange={(e) =>
+                        setLocalSettings({ ...localSettings, svsgApiKey: e.target.value })
+                      }
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    结构化视觉语义网关(SVSG V5.2.1):图片+问题 → 检测编译 → 声明验证 →
+                    带置信度的结构化答案。本地部署后在此配置地址,图片生成界面即可调用分析
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="github-token">GitHub Token（可选）</Label>
+                  <Input
+                    id="github-token"
+                    type="password"
+                    placeholder="ghp_...（留空使用匿名访问）"
+                    value={localSettings.githubToken ?? ""}
+                    onChange={(e) =>
+                      setLocalSettings({ ...localSettings, githubToken: e.target.value })
+                    }
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    GitHub 公共数据无需登录；配置 Token 后 API 限额从 60 次/小时提升到
+                    5000 次/小时。Token 只保存在本地浏览器
+                  </p>
+                </div>
               </>
             )}
           </div>
@@ -465,10 +511,161 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                   placeholder="auto / python / typescript / go / rust / ..."
                 />
                 <p className="text-xs text-muted-foreground">给模型的「请用 X 语言回答」信号;留 auto 则不指定</p>
+
+                <div className="space-y-1">
+                  <Label htmlFor="code-mode-type">编程子模式</Label>
+                  <Select
+                    value={localSettings.codeModeType}
+                    onValueChange={(v) =>
+                      setLocalSettings({ ...localSettings, codeModeType: v as "auto" | "collab" })
+                    }
+                  >
+                    <SelectTrigger id="code-mode-type">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">自动化编程 — 直接产出最终代码</SelectItem>
+                      <SelectItem value="collab">人机协作编程 — 对话旁工作区迭代</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    {localSettings.codeModeType === "collab"
+                      ? "协作模式:AI 回复的代码块自动进入右侧工作区,可编辑/批准后再采用"
+                      : "自动化模式:直接给出最终代码"}
+                  </p>
+                </div>
               </div>
             )}
           </div>
           <Separator />
+
+          {localSettings.codeMode && (
+            <>
+              {/* 审核模式 */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-medium text-foreground">审核模式</h3>
+                <p className="text-xs text-muted-foreground">
+                  编程结果生成后,用独立 API key 的模型手动审核(编程回复下方出现「审核」按钮)
+                </p>
+                <div className="flex items-center justify-between rounded-lg border border-border p-3">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="review-enabled">启用审核</Label>
+                    <p className="text-xs text-muted-foreground">对编程结果做安全 / 质量审查</p>
+                  </div>
+                  <Switch
+                    id="review-enabled"
+                    checked={localSettings.codeReviewEnabled}
+                    onCheckedChange={(checked) =>
+                      setLocalSettings({ ...localSettings, codeReviewEnabled: checked })
+                    }
+                  />
+                </div>
+                {localSettings.codeReviewEnabled && (
+                  <div className="space-y-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs">审核 API 地址</Label>
+                      <Input
+                        value={localSettings.codeReviewApiUrl}
+                        onChange={(e) =>
+                          setLocalSettings({ ...localSettings, codeReviewApiUrl: e.target.value })
+                        }
+                        placeholder="https://api.qnaigc.com/v1"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">审核 API Key(独立)</Label>
+                      <Input
+                        type="password"
+                        value={localSettings.codeReviewApiKey}
+                        onChange={(e) =>
+                          setLocalSettings({ ...localSettings, codeReviewApiKey: e.target.value })
+                        }
+                        placeholder="sk-..."
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">审核模型</Label>
+                      <Input
+                        value={localSettings.codeReviewModel}
+                        onChange={(e) =>
+                          setLocalSettings({ ...localSettings, codeReviewModel: e.target.value })
+                        }
+                        placeholder="openai/gpt-4o-mini"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+              <Separator />
+
+              {/* Agent 集群 */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-medium text-foreground">Agent 集群</h3>
+                <p className="text-xs text-muted-foreground">
+                  编程模式下并行多路 Agent(最高 4 路)各自产出方案,主模型综合对比后给出最佳实现
+                </p>
+                <div className="flex items-center justify-between rounded-lg border border-border p-3">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="cluster-enabled">启用集群</Label>
+                    <p className="text-xs text-muted-foreground">每路可填独立 API key,也可填相同 key</p>
+                  </div>
+                  <Switch
+                    id="cluster-enabled"
+                    checked={localSettings.agentClusterEnabled}
+                    onCheckedChange={(checked) =>
+                      setLocalSettings({ ...localSettings, agentClusterEnabled: checked })
+                    }
+                  />
+                </div>
+                {localSettings.agentClusterEnabled && (
+                  <div className="space-y-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs">集群路数(1-4)</Label>
+                      <Select
+                        value={String(localSettings.agentClusterCount)}
+                        onValueChange={(v) =>
+                          setLocalSettings({ ...localSettings, agentClusterCount: Number(v) })
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {[1, 2, 3, 4].map((n) => (
+                            <SelectItem key={n} value={String(n)}>
+                              {n} 路
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    {Array.from({ length: localSettings.agentClusterCount }).map((_, i) => (
+                      <div key={i} className="space-y-1 rounded-lg border border-border p-2">
+                        <span className="text-xs font-medium text-muted-foreground">Agent {i + 1}</span>
+                        <Input
+                          value={localSettings.agentClusterApiUrls[i] ?? ""}
+                          onChange={(e) => updateClusterSlot(i, "agentClusterApiUrls", e.target.value)}
+                          placeholder="API 地址(留空用主对话)"
+                        />
+                        <Input
+                          type="password"
+                          value={localSettings.agentClusterKeys[i] ?? ""}
+                          onChange={(e) => updateClusterSlot(i, "agentClusterKeys", e.target.value)}
+                          placeholder="API Key(可填相同)"
+                        />
+                        <Input
+                          value={localSettings.agentClusterModels[i] ?? ""}
+                          onChange={(e) => updateClusterSlot(i, "agentClusterModels", e.target.value)}
+                          placeholder="模型(留空用主对话)"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <Separator />
+            </>
+          )}
 
           {/* 温度分区 */}
           <div className="space-y-4">
@@ -485,7 +682,11 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                   step={0.1}
                   value={localSettings.temperature}
                   onChange={(e) =>
-                    setLocalSettings({ ...localSettings, temperature: Number(e.target.value) })
+                    setLocalSettings({
+                      ...localSettings,
+                      // 清空输入得到 NaN→回落默认 0.7;越界钳到 [0,2]
+                      temperature: Math.min(Math.max(Number(e.target.value) || 0.7, 0), 2),
+                    })
                   }
                 />
                 <p className="text-xs text-muted-foreground">普通聊天,默认 0.7</p>
@@ -500,11 +701,117 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                   step={0.1}
                   value={localSettings.codeTemperature}
                   onChange={(e) =>
-                    setLocalSettings({ ...localSettings, codeTemperature: Number(e.target.value) })
+                    setLocalSettings({
+                      ...localSettings,
+                      // 清空输入得到 NaN→回落默认 0.3;越界钳到 [0,2]
+                      codeTemperature: Math.min(Math.max(Number(e.target.value) || 0.3, 0), 2),
+                    })
                   }
                 />
                 <p className="text-xs text-muted-foreground">代码输出更确定,默认 0.3</p>
               </div>
+            </div>
+          </div>
+          <Separator />
+
+          {/* 模型智能路由 */}
+          <div className="space-y-4">
+            <h3 className="text-sm font-medium text-foreground">模型智能路由</h3>
+            <p className="text-xs text-muted-foreground">
+              按场景一键切换三档模型:完美=最强模型 / 性价比=中端 / 省钱=最低端;关闭则用手动选择的模型
+            </p>
+            <div className="space-y-1">
+              <Label>路由模式</Label>
+              <Select
+                value={localSettings.routingMode}
+                onValueChange={(v) =>
+                  setLocalSettings({
+                    ...localSettings,
+                    routingMode: v as "off" | "perfect" | "balanced" | "budget",
+                  })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="off">关闭 — 手动选择模型</SelectItem>
+                  <SelectItem value="perfect">完美模式 — 选用最强模型</SelectItem>
+                  <SelectItem value="balanced">性价比模式 — 选用中端模型</SelectItem>
+                  <SelectItem value="budget">省钱模式 — 选用最低端模型</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {localSettings.routingMode !== "off" && (
+              <div className="space-y-2">
+                <div className="space-y-1">
+                  <Label className="text-xs">完美模式模型（最强）</Label>
+                  <Input
+                    value={localSettings.perfectModel}
+                    onChange={(e) =>
+                      setLocalSettings({ ...localSettings, perfectModel: e.target.value })
+                    }
+                    placeholder="如 claude-opus-5 / openai/gpt-4o"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">性价比模式模型（中端）</Label>
+                  <Input
+                    value={localSettings.balancedModel}
+                    onChange={(e) =>
+                      setLocalSettings({ ...localSettings, balancedModel: e.target.value })
+                    }
+                    placeholder="如 openai/gpt-4o-mini"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">省钱模式模型（最低端）</Label>
+                  <Input
+                    value={localSettings.budgetModel}
+                    onChange={(e) =>
+                      setLocalSettings({ ...localSettings, budgetModel: e.target.value })
+                    }
+                    placeholder="如 deepseek-chat"
+                  />
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  当前生效: {resolveRoutedModel(localSettings)}（留空的档位回落手动选择的模型）
+                </p>
+              </div>
+            )}
+          </div>
+          <Separator />
+
+          {/* Agent 记忆模式 */}
+          <div className="space-y-4">
+            <h3 className="text-sm font-medium text-foreground">Agent 记忆模式</h3>
+            <p className="text-xs text-muted-foreground">
+              子 Agent / Agent 集群是否共享主对话的上下文与分级记忆
+            </p>
+            <div className="space-y-1">
+              <Label>记忆模式</Label>
+              <Select
+                value={localSettings.agentMemoryMode}
+                onValueChange={(v) =>
+                  setLocalSettings({
+                    ...localSettings,
+                    agentMemoryMode: v as "isolated" | "unified",
+                  })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="isolated">记忆隔离 — 子 Agent 只见分工任务（最省 token）</SelectItem>
+                  <SelectItem value="unified">记忆统一 — 注入最近对话与分级记忆</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                {localSettings.agentMemoryMode === "unified"
+                  ? "统一:子 Agent 带着完整背景作答,结果更贴合上下文,但每路多消耗约 1-3K token"
+                  : "隔离:子 Agent 独立作答互不串扰,token 最省（默认）"}
+              </p>
             </div>
           </div>
           <Separator />

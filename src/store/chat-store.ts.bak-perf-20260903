@@ -1,10 +1,7 @@
 import { create } from "zustand";
-// 浏览器与 Node(>=18)均有全局 crypto.randomUUID,客户端 store 不再引
-// node:crypto(服务端内置模块进客户端 bundle 受打包环境影响)
-const uuidv4 = (): string =>
-  typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-    ? crypto.randomUUID()
-    : "msg-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+import { randomUUID } from "node:crypto";
+// 与 db.ts 一致:用 node:crypto.randomUUID 替代 uuid 包,少一个依赖
+const uuidv4 = randomUUID;
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -83,16 +80,6 @@ export interface Settings {
   agentClusterKeys: string[];
   /** 每路的模型(可复用默认) */
   agentClusterModels: string[];
-  /** Agent 记忆模式:isolated=子 Agent 只见分工任务(默认,最省 token) / unified=注入最近对话+分级记忆 */
-  agentMemoryMode: "isolated" | "unified";
-  /** 模型智能路由:off=手动选择(默认) / perfect=最强 / balanced=中端 / budget=最低端 */
-  routingMode: "off" | "perfect" | "balanced" | "budget";
-  /** 完美模式模型(最强) */
-  perfectModel: string;
-  /** 性价比模式模型(中端) */
-  balancedModel: string;
-  /** 省钱模式模型(最低端) */
-  budgetModel: string;
   maxContextTurns: number; // 滑动窗口大小
   tokenBudget: number;    // 每次请求的 max_tokens
   modelName: string;
@@ -168,7 +155,6 @@ export interface ChatState {
 
   updateMessage: (conversationId: string, messageId: string, content: string) => void;
   truncateMessagesAfter: (conversationId: string, messageId: string) => void;
-  discardPendingAssistantMessage: (conversationId: string) => void;
 
   updateSettings: (settings: Partial<Settings>) => void;
   setSidebarOpen: (open: boolean) => void;
@@ -209,11 +195,6 @@ export const DEFAULT_SETTINGS: Settings = {
   svsgApiKey: "",
   codeMode: false,
   codeLanguage: 'auto',
-  agentMemoryMode: "isolated",
-  routingMode: "off",
-  perfectModel: "",
-  balancedModel: "",
-  budgetModel: "",
   maxContextTurns: 10,
   tokenBudget: 4096,
   modelName: "default",
@@ -283,9 +264,6 @@ function loadSettings(): Settings {
     // 温度分区字段默认补全
     if (typeof merged.temperature !== 'number' || !(merged.temperature >= 0)) merged.temperature = 0.7;
     if (typeof merged.codeTemperature !== 'number' || !(merged.codeTemperature >= 0)) merged.codeTemperature = 0.3;
-    // 温度范围钳制 [0,2]:旧数据/手改 localStorage 可能越界,透传上游会 400
-    merged.temperature = Math.min(merged.temperature, 2);
-    merged.codeTemperature = Math.min(merged.codeTemperature, 2);
     // 编程子模式 / 审核 / 集群 字段默认补全
     if (merged.codeModeType !== "auto" && merged.codeModeType !== "collab") merged.codeModeType = "auto";
     if (typeof merged.codeReviewEnabled !== 'boolean') merged.codeReviewEnabled = false;
@@ -303,18 +281,6 @@ function loadSettings(): Settings {
     if (!Array.isArray(merged.agentClusterApiUrls)) merged.agentClusterApiUrls = [];
     if (!Array.isArray(merged.agentClusterKeys)) merged.agentClusterKeys = [];
     if (!Array.isArray(merged.agentClusterModels)) merged.agentClusterModels = [];
-    // Agent 记忆模式 / 模型智能路由 字段默认补全
-    if (merged.agentMemoryMode !== "unified") merged.agentMemoryMode = "isolated";
-    if (
-      merged.routingMode !== "perfect" &&
-      merged.routingMode !== "balanced" &&
-      merged.routingMode !== "budget"
-    ) {
-      merged.routingMode = "off";
-    }
-    if (typeof merged.perfectModel !== "string") merged.perfectModel = "";
-    if (typeof merged.balancedModel !== "string") merged.balancedModel = "";
-    if (typeof merged.budgetModel !== "string") merged.budgetModel = "";
     return merged;
   } catch {
     return DEFAULT_SETTINGS;
@@ -336,25 +302,6 @@ export function chatApiKeyFor(settings: Settings): string {
     return settings.chatProviderKeys[new URL(settings.chatApiUrl).hostname] ?? "";
   } catch {
     return "";
-  }
-}
-
-/**
- * 模型智能路由解析:按当前路由模式返回应使用的模型。
- * 路由未开启(off)或目标档位未配置时,回落手动选择的 chatModel。
- * 子 Agent / Agent 集群 / 审核等所有下游取模型的地方统一经此解析,
- * 保证路由一次切换全链路生效。
- */
-export function resolveRoutedModel(settings: Settings): string {
-  switch (settings.routingMode) {
-    case "perfect":
-      return settings.perfectModel || settings.chatModel;
-    case "balanced":
-      return settings.balancedModel || settings.chatModel;
-    case "budget":
-      return settings.budgetModel || settings.chatModel;
-    default:
-      return settings.chatModel;
   }
 }
 
@@ -569,11 +516,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   // 流式期间高频调用:只改内存,持久化由调用方在结束后 persistConversation
   updateLastAssistantMessage: (conversationId, content, extras) => {
-    // 工具状态事件(appendToolEvent/finishToolEvent)在流式期间也会到达,
-    // 而此时最后一条助手消息正被 streamingSlice 覆盖显示(快照在 beginStream
-    // 时拍摄,不含后续事件)——不同步进 slice 的话,工具进度条在流结束前不可见。
-    // 这里把更新后的消息同步写回 slice,但保留 slice 里已流出的正文。
-    let updatedMsg: ChatMessage | null = null;
     set((state) => {
       const conversations = state.conversations.map((c) => {
         if (c.id !== conversationId) return c;
@@ -605,21 +547,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
               toolEvents,
               toolNote: extras?.setToolNote ?? prev.toolNote,
             };
-            updatedMsg = messages[i];
             break;
           }
         }
         return { ...c, messages };
       });
-      // 同步流式切片:正文以 slice 已累计的为准(conversations 里的占位
-      // assistant 在流式期间 content 为空),工具事件用刚更新的这份
-      const slice = state.streamingSlice;
-      if (updatedMsg && slice && slice.conversationId === conversationId) {
-        return {
-          conversations,
-          streamingSlice: { conversationId, message: { ...updatedMsg, content: slice.message.content } },
-        };
-      }
       return { conversations };
     });
   },
@@ -655,33 +587,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return { conversations };
     });
     if (updated) void persistToServer(updated);
-  },
-
-  discardPendingAssistantMessage: (conversationId) => {
-    set((state) => {
-      const conversations = state.conversations.map((c) => {
-        if (c.id !== conversationId) return c;
-        const last = c.messages[c.messages.length - 1];
-        if (
-          !last ||
-          last.role !== "assistant" ||
-          last.content.trim().length > 0 ||
-          (last.toolEvents?.length ?? 0) > 0 ||
-          (last.imageUrls?.length ?? 0) > 0 ||
-          last.toolNote
-        ) {
-          return c;
-        }
-        return {
-          ...c,
-          messages: c.messages.slice(0, -1),
-          updatedAt: Date.now(),
-        };
-      });
-      const streamingSlice =
-        state.streamingSlice?.conversationId === conversationId ? null : state.streamingSlice;
-      return { conversations, streamingSlice };
-    });
   },
 
   updateSettings: (newSettings) => {

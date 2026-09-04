@@ -26,10 +26,16 @@ export interface SubAgent {
   userMessage: string;
   /** 可选:指定子 Agent 用的模型名;不传则用主对话的模型 */
   modelName?: string;
+  /** 可选:本路专用的 API 地址;不传则用主对话的 chatApiUrl(集群模式每路可不同) */
+  apiUrl?: string;
+  /** 可选:本路专用的 API key;不传则用主对话的 key(集群模式每路可填不同/相同 key) */
+  apiKey?: string;
   /** 可选:子 Agent 单独的 max_tokens 上限(默认 800) */
   maxTokens?: number;
   /** 可选:超时毫秒(默认 30000) */
   timeoutMs?: number;
+  /** 统一记忆模式下注入的共享上下文(最近对话+分级记忆);隔离模式不传 */
+  contextText?: string;
 }
 
 export interface SubAgentResult {
@@ -56,6 +62,8 @@ export async function runSubAgents(
     temperature?: number;
     max_tokens?: number;
     signal?: AbortSignal;
+    apiUrl?: string;
+    apiKey?: string;
   }) => Promise<{ content: string }>,
   agents: SubAgent[],
   /** 主对话的 fallback model,子 Agent 未指定 modelName 时使用 */
@@ -74,6 +82,9 @@ export async function runSubAgents(
         model,
         // 子 Agent 温度固定 0.3:分工输出要确定、简短,不跟随主对话/编程模式
         temperature: 0.3,
+        // 集群模式每路可带独立 apiUrl/apiKey(透传给调用方决定用哪套凭据)
+        apiUrl: agent.apiUrl,
+        apiKey: agent.apiKey,
         // 与 formatSubAgentResults 的 maxCharsPerAgent(1500 字符)匹配,
         // 避免生成远多于注入限度的冗余 token
         max_tokens: agent.maxTokens ?? 800,
@@ -83,7 +94,15 @@ export async function runSubAgents(
             role: "system",
             content: `${agent.systemPrompt}\n\n输出要求:直接给出结论要点,不要复述问题、不要解释推理过程,保持简洁。`,
           },
-          { role: "user", content: agent.userMessage },
+          // 统一记忆模式:先注入共享上下文(最近对话+分级记忆)再给分工任务;
+          // 隔离模式不注入,子 Agent 保持独立(token 最省)
+          ...(agent.contextText
+            ? [
+                { role: "user" as const, content: agent.contextText },
+                { role: "assistant" as const, content: "(已了解以上背景信息)" },
+              ]
+            : []),
+          { role: "user" as const, content: agent.userMessage },
         ],
       });
       if (!result.content || !result.content.trim()) {

@@ -20,7 +20,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useChatStore, type ImageProvider } from "@/store/chat-store";
-import { ImageIcon, Loader2, Sparkles, Upload, X } from "lucide-react";
+import { ImageIcon, Loader2, Sparkles, Upload, X, ScanSearch } from "lucide-react";
 import { toast } from "sonner";
 
 interface ImageGeneratorProps {
@@ -42,6 +42,16 @@ export function ImageGenerator({
   );
   const [generating, setGenerating] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  // SVSG V5.2.1 视觉语义分析:对生成图片提问,返回带声明验证的结构化结果
+  const [svsgQuery, setSvsgQuery] = useState("");
+  const [svsgLoading, setSvsgLoading] = useState(false);
+  const [svsgResult, setSvsgResult] = useState<{
+    status: string;
+    final_answer: string | null;
+    claims: Array<{ instance_id: number | null; field: string; value: unknown; confidence: string | null }>;
+    human_review_required: boolean;
+    error: { message?: string } | null;
+  } | null>(null);
   /** 参考图(仅 Gemini 模式生效):本地 data URL 数组 */
   const [referenceImages, setReferenceImages] = useState<{ url: string; mimeType: string }[]>([]);
   const [uploadingRef, setUploadingRef] = useState(false);
@@ -126,7 +136,8 @@ export function ImageGenerator({
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "生成失败";
       // 尝试备选模型
-      if (provider === "gemini") {
+      // 备选通道只在配了对应 key 时尝试,没 key 的空请求只会白等一次失败
+      if (provider === "gemini" && settings.apiKeys?.["dall-e"]) {
         toast.error(message + "，尝试 DALL-E 3...");
         try {
           const fallbackResponse = await fetch("/api/image/generate", {
@@ -148,7 +159,7 @@ export function ImageGenerator({
         } catch {
           // fallback also failed
         }
-      } else if (provider === "dall-e") {
+      } else if (provider === "dall-e" && settings.apiKeys?.flux) {
         toast.error(message + "，尝试 Flux...");
         try {
           const fallbackResponse = await fetch("/api/image/generate", {
@@ -180,7 +191,50 @@ export function ImageGenerator({
   const handleClose = () => {
     setPrompt("");
     setPreviewUrl(null);
+    setSvsgQuery("");
+    setSvsgResult(null);
     onOpenChange(false);
+  };
+
+  /** SVSG V5.2.1 分析:图片 → L1 编译 → L1.5 验证 → L3 编排 → 结构化答案 */
+  const handleSvsgAnalyze = async () => {
+    if (!previewUrl || !svsgQuery.trim() || svsgLoading) return;
+    setSvsgLoading(true);
+    setSvsgResult(null);
+    try {
+      // 拉取生成图片 → base64(服务端只收 base64,避免 URL 回源问题)
+      const imgRes = await fetch(previewUrl);
+      if (!imgRes.ok) throw new Error("无法读取生成图片");
+      const blob = await imgRes.blob();
+      if (blob.size > 8 * 1024 * 1024) throw new Error("图片过大(SVSG 上限 8MB)");
+      const b64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
+        reader.onerror = () => reject(new Error("图片读取失败"));
+        reader.readAsDataURL(blob);
+      });
+
+      const res = await fetch("/api/svsg/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageBase64: b64,
+          mimeType: blob.type || "image/png",
+          query: svsgQuery.trim(),
+          apiUrl: settings.svsgApiUrl,
+          apiKey: settings.svsgApiKey || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "SVSG 分析失败");
+      setSvsgResult(data);
+      toast.success("SVSG 分析完成: " + (data.status || "unknown"));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "分析失败";
+      toast.error("SVSG 分析失败: " + msg);
+    } finally {
+      setSvsgLoading(false);
+    }
   };
 
   return (
@@ -301,7 +355,9 @@ export function ImageGenerator({
               onValueChange={(val) => {
                 if (val) {
                   setProvider(val as ImageProvider);
-                  updateSettings({ apiProvider: val as ImageProvider, imageModel: val });
+                  // imageModel 不再跟随 provider 改写(其语义是模型名如 gpt-image,
+                  // 写成 provider 名会误导后续的模型选择逻辑)
+                  updateSettings({ apiProvider: val as ImageProvider });
                 }
               }}
             >
@@ -340,6 +396,81 @@ export function ImageGenerator({
                 alt="Generated"
                 className="w-full h-auto object-contain max-h-[300px]"
               />
+            </div>
+          )}
+
+          {/* SVSG V5.2.1 视觉语义分析 */}
+          {previewUrl && (
+            <div className="space-y-2 rounded-lg border border-border p-3">
+              <Label htmlFor="svsg-query" className="flex items-center gap-1.5">
+                <ScanSearch className="size-3.5" />
+                SVSG 语义分析
+              </Label>
+              <div className="flex gap-2">
+                <Input
+                  id="svsg-query"
+                  value={svsgQuery}
+                  onChange={(e) => setSvsgQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.nativeEvent.isComposing) handleSvsgAnalyze();
+                  }}
+                  placeholder="对图片提问,如:图里有几个红色物体?"
+                  className="text-sm"
+                  disabled={svsgLoading}
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleSvsgAnalyze}
+                  disabled={svsgLoading || !svsgQuery.trim()}
+                >
+                  {svsgLoading ? <Loader2 className="size-4 animate-spin" /> : "分析"}
+                </Button>
+              </div>
+
+              {svsgResult && (
+                <div className="space-y-2 rounded-md bg-muted/40 p-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={
+                        "rounded px-1.5 py-0.5 font-mono " +
+                        (svsgResult.status === "delivered"
+                          ? "bg-green-500/15 text-green-600"
+                          : svsgResult.status === "delivered_with_review"
+                            ? "bg-yellow-500/15 text-yellow-600"
+                            : "bg-red-500/15 text-red-500")
+                      }
+                    >
+                      {svsgResult.status}
+                    </span>
+                    {svsgResult.human_review_required && (
+                      <span className="text-yellow-600">⚠️ 需人工复核</span>
+                    )}
+                  </div>
+                  {svsgResult.final_answer && (
+                    <p className="text-foreground leading-relaxed">{svsgResult.final_answer}</p>
+                  )}
+                  {svsgResult.claims?.length > 0 && (
+                    <div className="space-y-1">
+                      {svsgResult.claims.map((cl, i) => (
+                        <div key={i} className="flex items-start gap-1.5 font-mono text-[11px]">
+                          <span className="text-muted-foreground shrink-0">
+                            {cl.instance_id != null ? "#" + cl.instance_id + " " : ""}
+                            {cl.field}:
+                          </span>
+                          <span className="text-foreground break-all">{String(cl.value)}</span>
+                          {cl.confidence && (
+                            <span className="text-muted-foreground shrink-0">({cl.confidence})</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {svsgResult.error?.message && (
+                    <p className="text-red-500">⚠️ {svsgResult.error.message}</p>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>

@@ -43,8 +43,9 @@ export function ConversationList({ onMobileClose }: ConversationListProps) {
 
   const handleDelete = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    if (confirm("确定删除这个对话吗？")) {
+    if (confirm("确定删除这个对话吗?删除后无法恢复。")) {
       deleteConversation(id);
+      toast.success("对话已删除");
     }
   };
 

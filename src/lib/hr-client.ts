@@ -217,14 +217,15 @@ export async function healthCheck(): Promise<HealthResponse> {
  */
 export async function retrieveMemoryBlock(
   query: string,
-  limit = 3
+  limit = 3,
+  timeoutMs = 15000
 ): Promise<string> {
   try {
     const res = await fetch(`${HR_API_URL}/retrieve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query, top_k_sentences: limit, top_k_context: 1 }),
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) return "";
     const data = (await res.json()) as {
@@ -269,5 +270,50 @@ export async function ingestTurn(
     });
   } catch {
     // 入库失败不影响对话
+  }
+}
+
+/**
+ * SVSG V5.2.1 结构化视觉分析结果入库(兼容增强):
+ * 把"图片提问 + 最终答案 + 结构化断言"写入分级检索库,
+ * 后续对话可通过检索召回此前的图片分析结论。失败静默。
+ */
+export async function ingestSvsgResult(
+  query: string,
+  result: {
+    status?: string;
+    final_answer?: string | null;
+    claims?: Array<{
+      instance_id?: number | null;
+      field?: string;
+      value?: unknown;
+    }>;
+  }
+): Promise<void> {
+  try {
+    const claimLines = (result.claims ?? [])
+      .slice(0, 12)
+      .map(
+        (c) =>
+          (c.instance_id != null ? "#" + c.instance_id + " " : "") +
+          (c.field ?? "?") + ": " + String(c.value ?? "")
+      )
+      .join("; ");
+    const content =
+      "用户(图片提问): " + query +
+      "\nSVSG 视觉分析(status=" + (result.status ?? "unknown") + "): " +
+      (result.final_answer ?? "(无最终答案)") +
+      (claimLines ? "\n结构化断言: " + claimLines : "");
+    await fetch(HR_API_URL + "/ingest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: content.slice(0, 3000),
+        metadata: { source: "ai-platform-svsg", ts: Date.now() },
+      }),
+      signal: AbortSignal.timeout(20000),
+    });
+  } catch {
+    // SVSG 结果入库失败不影响分析响应
   }
 }

@@ -1,12 +1,19 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useChatStore, chatApiKeyFor, type ChatMessage } from "@/store/chat-store";
+import Link from "next/link";
+import {
+  useChatStore,
+  chatApiKeyFor,
+  resolveRoutedModel,
+  type ChatMessage,
+} from "@/store/chat-store";
 import { MessageBubble } from "@/components/chat/message-bubble";
 import { ImageGenerator } from "@/components/chat/image-generator";
 import { SettingsDialog } from "@/components/settings/settings-dialog";
 import { WebExtractor } from "@/components/web-extractor";
 import { MediaUpload, type MediaAttachment } from "@/components/chat/media-upload";
+import { CodeWorkspace } from "@/components/chat/code-workspace";
 import { toast } from "sonner";
 import { ConversationList } from "@/components/sidebar/conversation-list";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -29,6 +36,10 @@ import {
   Sparkles,
   Globe,
   SlidersHorizontal,
+  Code2,
+  ShieldCheck,
+  LoaderCircle,
+  Feather,
 } from "lucide-react";
 
 interface ModelOption {
@@ -147,6 +158,18 @@ export default function Home() {
   const [usage, setUsage] = useState({ prompt: 0, completion: 0 });
   const [systemPromptOpen, setSystemPromptOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
+  // 人机协作编程:右侧工作区开关
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  // 审核模式:针对最近一条编程回复的审核状态/结果
+  const [reviewState, setReviewState] = useState<{
+    messageId: string;
+    loading: boolean;
+    result?: string;
+    error?: string;
+  } | null>(null);
+  // 思考提示:流式开始后 2.5 秒内没收到首 token,显示「正在思考…」减少"卡死"错觉
+  const [thinkingHint, setThinkingHint] = useState(false);
+  const thinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -166,12 +189,22 @@ export default function Home() {
       .catch(() => {});
   }, []);
 
-  // 切换对话时重置本对话用量统计
+  // 切换对话时重置本对话用量统计与审核状态
   // (渲染期调整 state,避免 effect 内同步 setState 引发的级联渲染)
   const [prevConvId, setPrevConvId] = useState(currentConversationId);
   if (prevConvId !== currentConversationId) {
     setPrevConvId(currentConversationId);
     setUsage({ prompt: 0, completion: 0 });
+    setReviewState(null);
+  }
+
+  // 编程子模式切换时联动工作区:协作 → 自动展开,自动化 → 收起
+  // (渲染期同步 prev 模式,避免 effect 内 setState 的级联渲染)
+  const prevCodeModeKey = settings.codeMode ? settings.codeModeType : "off";
+  const [prevWorkspaceKey, setPrevWorkspaceKey] = useState(prevCodeModeKey);
+  if (prevWorkspaceKey !== prevCodeModeKey) {
+    setPrevWorkspaceKey(prevCodeModeKey);
+    setWorkspaceOpen(settings.codeMode && settings.codeModeType === "collab");
   }
 
   // Auto-focus textarea
@@ -330,8 +363,9 @@ export default function Home() {
       settings.tokenBudget
     );
 
-    // URL detection: auto-extract web content into context
-    const urlMatch = content.match(/https?:\/\/[^\s]+/);
+    // URL detection:首发、重新生成、编辑重发都以“本轮真实用户问题”做抓取
+    const urlSourceText = content || subAgentUserMessage;
+    const urlMatch = urlSourceText.match(/https?:\/\/[^\s]+/);
     if (urlMatch) {
       try {
         const crawlRes = await fetch("/api/crawl", {
@@ -377,12 +411,26 @@ export default function Home() {
             enabledTools: settings.enabledTools,
             autoRead: settings.toolAutoRead,
             parallel: settings.toolParallel,
+            githubToken: settings.githubToken || undefined,
           },
           tokenBudget: settings.tokenBudget,
           codeMode: settings.codeMode,
           codeLanguage: settings.codeLanguage,
           // 温度分区:聊天 0.7 / 编程模式 0.3
           temperature: settings.codeMode ? settings.codeTemperature : settings.temperature,
+          // Agent 集群:编程模式下并行多路(每路独立 key/模型,可填相同)
+          agentCluster:
+            settings.codeMode && settings.agentClusterEnabled
+              ? {
+                  enabled: true,
+                  count: settings.agentClusterCount,
+                  apiUrls: settings.agentClusterApiUrls,
+                  keys: settings.agentClusterKeys,
+                  models: settings.agentClusterModels,
+                }
+              : undefined,
+          // 图片生成 API Key(用户在设置中为当前 imageProvider 配置的 key)
+          imageApiKey: settings.apiKeys?.[settings.apiProvider],
           // 子 Agent 分工:仅在用户开启 + 预设非空时附带;
           // 过滤掉角色/提示词为空的不完整预设,避免白跑一次子 Agent 调用
           subAgents: settings.subAgentEnabled && settings.subAgentPresets.length > 0
@@ -410,7 +458,10 @@ export default function Home() {
             ? "http://localhost:11434"
             : settings.chatApiUrl,
           chatApiKey: chatApiKeyFor(settings),
-          chatModel: settings.chatModel,
+          // 模型智能路由:按路由模式解析实际使用的模型(未开启回落手动选择)
+          chatModel: resolveRoutedModel(settings),
+          // Agent 记忆模式:unified 时服务端为子 Agent/集群注入共享上下文
+          agentMemoryMode: settings.agentMemoryMode,
         }),
         signal: abortControllerRef.current.signal,
       });
@@ -422,6 +473,10 @@ export default function Home() {
       // 标记流式开始:把最后一条 assistant 消息快照进 streamingSlice,
       // 后续每个 token 只更新 slice,不再 setState 整列表 → 列表消息不重渲染
       useChatStore.getState().beginStream(convId);
+      // 2.5 秒没收到首 token,显示「正在思考…」弱化"卡死"错觉
+      if (thinkTimerRef.current) clearTimeout(thinkTimerRef.current);
+      thinkTimerRef.current = setTimeout(() => setThinkingHint(true), 2500);
+      let firstTokenReceived = false;
       await readSseStream(response, (data) => {
         let parsed: {
           type?: string;
@@ -468,6 +523,14 @@ export default function Home() {
 
         const delta = parsed.choices?.[0]?.delta?.content;
         if (delta) {
+          if (!firstTokenReceived) {
+            firstTokenReceived = true;
+            if (thinkTimerRef.current) {
+              clearTimeout(thinkTimerRef.current);
+              thinkTimerRef.current = null;
+            }
+            if (thinkingHint) setThinkingHint(false);
+          }
           fullContent += delta;
           // 高频路径:每个 token 只 push 进 streamingSlice,不重建 conversations 数组
           // 整列表组件不订阅 streamingSlice,自然不会 re-render
@@ -476,20 +539,29 @@ export default function Home() {
       });
     } catch (error: unknown) {
       if (error instanceof Error && error.name === "AbortError") {
-        // User cancelled - keep what we have
+        toast.info("已停止生成");
       } else {
         const message = error instanceof Error ? error.message : "请求失败";
+        toast.error("请求失败: " + message);
         const conv = useChatStore.getState().conversations.find((c) => c.id === convId);
         const existing = conv?.messages.findLast((m) => m.role === "assistant")?.content ?? "";
         useChatStore.getState().updateLastAssistantMessage(
           convId,
-          `${existing}\n\n⚠️ 错误：${message}\n\n请检查模型配置，或在设置中调整。`
+          existing
+            ? existing + "\n\n⚠️ 错误：" + message + "\n\n请检查模型配置，或在设置中调整。"
+            : "⚠️ 错误：" + message + "\n\n请检查模型配置，或在设置中调整。"
         );
       }
     } finally {
-      // 把流式期间累加在本地变量里的内容写回 conversations(用于持久化 + 切换对话后仍可见)
+      if (thinkTimerRef.current) {
+        clearTimeout(thinkTimerRef.current);
+        thinkTimerRef.current = null;
+      }
+      if (thinkingHint) setThinkingHint(false);
       if (fullContent) {
         useChatStore.getState().updateLastAssistantMessage(convId, fullContent);
+      } else {
+        useChatStore.getState().discardPendingAssistantMessage(convId);
       }
       useChatStore.getState().endStream();
       useChatStore.getState().setIsGenerating(false);
@@ -501,7 +573,12 @@ export default function Home() {
 
   const sendMessage = () => {
     const content = inputValue.trim();
-    if (!content || isGenerating) return;
+    if (isGenerating) return;
+    // 空输入(Enter 键仍可触发)给出反馈,而非静默返回
+    if (!content) {
+      toast.error("请输入内容后再发送");
+      return;
+    }
 
     let convId = currentConversationId;
     if (!convId) {
@@ -566,6 +643,49 @@ export default function Home() {
       useChatStore.getState().updateConversationSystemPrompt(currentConversationId, systemPromptDraft);
     }
     setSystemPromptOpen(false);
+  };
+
+  // ── 审核模式:针对最近一条编程回复,用独立 key 的模型审核 ──
+  const lastMsg = renderedMessages[renderedMessages.length - 1];
+  // 流式生成中不显示审核按钮(结果还没出来,审核半成品无意义)
+  const showReview =
+    settings.codeMode &&
+    settings.codeReviewEnabled &&
+    !isGenerating &&
+    lastMsg &&
+    lastMsg.role === "assistant" &&
+    lastMsg.content.trim().length > 0;
+  // 审核结果只挂在对应消息上:换消息/新回复后旧结果不再显示
+  const reviewOfLast = reviewState?.messageId === lastMsg?.id ? reviewState : null;
+  const handleReview = async () => {
+    if (!lastMsg || !lastMsg.content.trim()) return;
+    // 超长代码服务端会截断(审核上限 20000 字符),提前告知避免误审不完整代码
+    if (lastMsg.content.length > 12000) {
+      toast.warning("代码超过 12000 字符,超出部分将不参与审核(服务端上限 20000)");
+    }
+    setReviewState({ messageId: lastMsg.id, loading: true, result: undefined, error: undefined });
+    try {
+      const res = await fetch("/api/code-review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code: lastMsg.content,
+          apiUrl: settings.codeReviewApiUrl || settings.chatApiUrl,
+          apiKey: settings.codeReviewApiKey || chatApiKeyFor(settings),
+          model: settings.codeReviewModel || settings.chatModel,
+          language: settings.codeLanguage,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "审核失败");
+      setReviewState({ messageId: lastMsg.id, loading: false, result: data.review });
+    } catch (e) {
+      setReviewState({
+        messageId: lastMsg.id,
+        loading: false,
+        error: e instanceof Error ? e.message : "审核失败",
+      });
+    }
   };
 
   // 自选模型:当前 chatModel 不在已知列表时,作为"自选"项展示
@@ -657,6 +777,56 @@ export default function Home() {
             <SlidersHorizontal className="size-4" />
           </Button>
 
+          {settings.codeMode && (
+            <div className="flex items-center gap-0.5 rounded-md border border-border p-0.5">
+              <button
+                type="button"
+                onClick={() => useChatStore.getState().updateSettings({ codeModeType: "auto" })}
+                title="自动化编程:直接产出最终代码"
+                className={
+                  "px-2 py-0.5 rounded text-[11px] transition-colors " +
+                  (settings.codeModeType === "auto"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground")
+                }
+              >
+                自动化
+              </button>
+              <button
+                type="button"
+                onClick={() => useChatStore.getState().updateSettings({ codeModeType: "collab" })}
+                title="人机协作编程:代码进入右侧工作区迭代"
+                className={
+                  "px-2 py-0.5 rounded text-[11px] transition-colors " +
+                  (settings.codeModeType === "collab"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground")
+                }
+              >
+                协作
+              </button>
+            </div>
+          )}
+
+          {settings.codeMode && settings.codeModeType === "collab" && (
+            <Button
+              variant={workspaceOpen ? "secondary" : "ghost"}
+              size="icon-sm"
+              onClick={() => setWorkspaceOpen((o) => !o)}
+              title="代码工作区"
+            >
+              <Code2 className="size-4" />
+            </Button>
+          )}
+
+          <Link
+            href="/writing"
+            title="写作台"
+            className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <Feather className="size-4" />
+          </Link>
+
           <Button
             variant="ghost"
             size="icon-sm"
@@ -686,9 +856,10 @@ export default function Home() {
         </header>
 
         {/* Messages Area */}
-        <div className="flex-1 overflow-hidden">
-          <ScrollArea className="h-full">
-            <div className="max-w-3xl mx-auto px-4 py-6">
+        <div className="flex-1 overflow-hidden flex">
+          <div className="flex-1 min-w-0 overflow-hidden">
+            <ScrollArea className="h-full">
+              <div className="max-w-3xl mx-auto px-4 py-6">
               {!loaded ? (
                 <div className="flex items-center justify-center h-[50vh] text-sm text-muted-foreground">
                   正在加载对话…
@@ -727,9 +898,48 @@ export default function Home() {
                   ))}
                 </div>
               )}
+              {showReview && (
+                <div className="mt-3 space-y-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleReview}
+                    disabled={reviewOfLast?.loading}
+                    className="gap-1.5"
+                  >
+                    <ShieldCheck className="size-3.5" />
+                    {reviewOfLast?.loading ? "审核中…" : "审核"}
+                  </Button>
+                  {reviewOfLast?.result && (
+                    <div className="rounded-lg border border-border bg-card p-3 text-sm whitespace-pre-wrap leading-relaxed">
+                      <div className="text-xs font-medium text-muted-foreground mb-1 flex items-center gap-1">
+                        <ShieldCheck className="size-3.5" /> 审核意见
+                      </div>
+                      {reviewOfLast.result}
+                    </div>
+                  )}
+                  {reviewOfLast?.error && (
+                    <div className="text-xs text-red-500">⚠️ {reviewOfLast.error}</div>
+                  )}
+                </div>
+              )}
+              {thinkingHint && (
+                <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
+                  <LoaderCircle className="size-3.5 animate-spin" />
+                  模型正在思考…通常 3-5 秒内有响应,大问题可能更慢
+                </div>
+              )}
               <div ref={messagesEndRef} />
-            </div>
-          </ScrollArea>
+              </div>
+            </ScrollArea>
+          </div>
+          <CodeWorkspace
+            open={workspaceOpen}
+            onClose={() => setWorkspaceOpen(false)}
+            messages={currentConversation?.messages ?? []}
+            isStreaming={isGenerating}
+          />
         </div>
 
         {/* Input Area */}
@@ -801,6 +1011,19 @@ export default function Home() {
                   className="text-[11px] bg-muted/50 border border-input rounded-md px-2 py-1 w-52 focus:outline-none focus:ring-1 focus:ring-ring"
                   autoFocus
                 />
+              )}
+              {settings.routingMode !== "off" && (
+                <span
+                  title={"模型智能路由已开启: " + resolveRoutedModel(settings)}
+                  className="text-[10px] text-primary border border-primary/40 rounded px-1.5 py-0.5"
+                >
+                  {settings.routingMode === "perfect"
+                    ? "完美"
+                    : settings.routingMode === "balanced"
+                      ? "性价比"
+                      : "省钱"}
+                  模式
+                </span>
               )}
               {!chatApiKeyFor(settings) &&
                 !settings.chatModel.startsWith("ollama/") && (

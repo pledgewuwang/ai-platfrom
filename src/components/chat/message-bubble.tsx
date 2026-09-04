@@ -4,6 +4,7 @@ import React, { memo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import type { ChatMessage } from "@/store/chat-store";
 import { Bot, User, Copy, Check, Pencil, RefreshCw } from "lucide-react";
+import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -26,11 +27,16 @@ function CodeBlock({ children }: { children?: React.ReactNode }) {
   const handleCopy = async () => {
     const text = preRef.current?.textContent ?? "";
     try {
+      if (!navigator.clipboard || !window.isSecureContext) {
+        toast.error("复制失败:当前页面不是 HTTPS 或无剪贴板权限");
+        return;
+      }
       await navigator.clipboard.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
+      toast.success("已复制代码");
     } catch {
-      // 剪贴板不可用(非 https 环境)时静默
+      toast.error("复制失败:无法访问剪贴板");
     }
   };
 
@@ -45,7 +51,7 @@ function CodeBlock({ children }: { children?: React.ReactNode }) {
       <button
         onClick={handleCopy}
         title="复制代码"
-        className="absolute top-2 right-2 p-1.5 rounded-md bg-background/80 border border-border text-muted-foreground hover:text-foreground opacity-0 group-hover/code:opacity-100 transition-opacity"
+        className="absolute top-2 right-2 p-1.5 rounded-md bg-background/80 border border-border text-muted-foreground hover:text-foreground opacity-60 md:opacity-0 md:group-hover/code:opacity-100 transition-opacity"
       >
         {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
       </button>
