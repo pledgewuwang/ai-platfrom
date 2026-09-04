@@ -3,7 +3,7 @@
 export const dynamic = "force-dynamic";
 
 
-import { FormEvent, useState } from "react";
+import { Suspense, FormEvent, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { LockKeyhole, LoaderCircle, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 export default function LanLoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LanLoginForm />
+    </Suspense>
+  );
+}
+
+function LanLoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const nextPath = searchParams.get("next") || "/";
